@@ -1,15 +1,27 @@
+import os
 from flask import Flask, render_template, Response
 import redis
 from shared.config import REDIS_URL
 
-app = Flask(__name__)
+# Explicit path to the templates folder (rock solid in Docker)
+template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'templates'))
+app = Flask(__name__, template_folder=template_dir)
+
+# Redis client
 redis_client = redis.Redis.from_url(REDIS_URL)
 
 @app.route("/")
 def dashboard():
     servers = redis_client.smembers("found_servers")
+
+    # Decode and sort the IPs
     servers_sorted = sorted(ip.decode() for ip in servers)
-    return render_template("dashboard.html", found=len(servers_sorted), servers=servers_sorted)
+
+    return render_template(
+        "dashboard.html",
+        found=len(servers_sorted),
+        servers=servers_sorted
+    )
 
 @app.route("/export")
 def export():
