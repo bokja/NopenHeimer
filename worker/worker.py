@@ -45,7 +45,7 @@ def scan_ip(ip_str):
 def is_port_open(ip, port):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.3)
+            sock.settimeout(0.1)
             return sock.connect_ex((ip, port)) == 0
     except Exception:
         return False

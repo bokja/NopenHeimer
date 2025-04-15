@@ -3,3 +3,4 @@ redis
 tqdm
 Flask
 python-dotenv
+eventlet
