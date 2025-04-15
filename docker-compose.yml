@@ -27,7 +27,7 @@ services:
       - redis
 
   worker:
-   build: .
+    build: .
     command: celery -A worker.worker worker --loglevel=info
     env_file: .env
     depends_on:
