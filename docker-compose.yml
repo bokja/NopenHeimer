@@ -28,7 +28,7 @@ services:
 
   worker:
     build: .
-    command: celery -A worker.worker worker --pool=eventlet --concurrency=100 --loglevel=info
+    command: celery -A worker.worker worker --pool=eventlet --concurrency=10 --loglevel=info
     env_file: .env
     depends_on:
       - redis
