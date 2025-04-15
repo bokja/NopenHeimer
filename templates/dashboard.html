@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Minecraft Server Scanner</title>
+    <meta http-equiv="refresh" content="5">
+    <style>
+        body { font-family: Arial; padding: 20px; background-color: #f4f4f4; }
+        h1 { color: #333; }
+        .server { background: white; padding: 10px; margin-bottom: 5px; border-left: 4px solid green; }
+    </style>
+</head>
+<body>
+    <h1>Minecraft Server Scanner Dashboard</h1>
+    <p><strong>Servers Found:</strong> {{ found }}</p>
+    <p><a href="/export" target="_blank">📥 Download Found Servers</a></p>
+    {% for server in servers %}
+        <div class="server">{{ server }}</div>
+    {% endfor %}
+</body>
+</html>
