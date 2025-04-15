@@ -14,7 +14,7 @@ CONNECT_TIMEOUT = 1.0
 
 WORKER_ID = os.getenv("WORKER_ID", os.uname()[1])  # EC2 hostname or Docker container ID
 
-@app.task
+@app.task(name="worker.worker.scan_ip")
 def scan_ip(ip_str):
     now = int(time.time())
 
@@ -49,3 +49,5 @@ def is_port_open(ip, port):
             return sock.connect_ex((ip, port)) == 0
     except Exception:
         return False
+
+app.autodiscover_tasks(['worker'])  # Ensures Celery can find tasks in worker module
