@@ -1,9 +1,10 @@
-# controller/dashboard.py
+import os
 from flask import Flask, render_template, Response
 import redis
 from shared.config import REDIS_URL
 
-app = Flask(__name__)
+template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'templates'))
+app = Flask(__name__, template_folder=template_dir)
 redis_client = redis.Redis.from_url(REDIS_URL)
 
 @app.route("/")
