@@ -1,0 +1,36 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  controller:
+    build: .
+    container_name: controller
+    command: python controller/main.py
+    env_file: .env
+    depends_on:
+      - redis
+
+  dashboard:
+    build: .
+    container_name: dashboard
+    command: python controller/dashboard.py
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+    env_file: .env
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    container_name: worker
+    command: celery -A worker.worker worker --loglevel=info
+    env_file: .env
+    depends_on:
+      - redis

@@ -1,0 +1,5 @@
+celery
+redis
+tqdm
+Flask
+python-dotenv
