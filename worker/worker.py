@@ -1,44 +1,40 @@
 from celery import Celery
 import socket
 import redis
-from shared.logger import get_logger
-from shared.config import REDIS_URL, TARGET_PORT, CONNECT_TIMEOUT, PING_MESSAGE
+from shared.config import REDIS_URL
 
-app = Celery('worker', broker=REDIS_URL)
+app = Celery("worker", broker=REDIS_URL)
 redis_client = redis.Redis.from_url(REDIS_URL)
-SCAN_TTL = 7 * 24 * 60 * 60
 
-app.conf.task_annotations = {
-    'worker.scan_ip': {'rate_limit': '5/s'}
-}
+TARGET_PORT = 25565
+PING_MESSAGE = b'\xfe'
+CONNECT_TIMEOUT = 1.0  # seconds
 
-logger = get_logger()
-
-def is_port_open(ip, port):
-    try:
-        with socket.create_connection((ip, port), timeout=CONNECT_TIMEOUT):
-            return True
-    except Exception:
-        return False
-
-@app.task(name="worker.scan_ip")
-def scan_ip(ip):
-    if redis_client.exists(f"scanned:{ip}"):
-        return None
-
-    if not is_port_open(ip, TARGET_PORT):
-        redis_client.setex(f"scanned:{ip}", SCAN_TTL, 1)
+@app.task
+def scan_ip(ip_str):
+    # Quick port check to avoid full connection
+    if not is_port_open(ip_str, TARGET_PORT):
         return None
 
     try:
-        with socket.create_connection((ip, TARGET_PORT), timeout=CONNECT_TIMEOUT) as s:
+        with socket.create_connection((ip_str, TARGET_PORT), timeout=CONNECT_TIMEOUT) as s:
             s.sendall(PING_MESSAGE)
             response = s.recv(1024)
+
             if response and response.startswith(b'\xff'):
-                redis_client.sadd("found_servers", ip)
-                logger.info(f"Found server: {ip} - {response.hex()}")
+                redis_client.sadd("found_servers", ip_str)
+                return ip_str
     except Exception:
         pass
 
-    redis_client.setex(f"scanned:{ip}", SCAN_TTL, 1)
     return None
+
+def is_port_open(ip, port):
+    """Lightweight port availability check before full scan."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.3)  # ⚡ very quick check
+            result = sock.connect_ex((ip, port))
+            return result == 0  # 0 means success
+    except Exception:
+        return False
