@@ -24,7 +24,8 @@ def save_checkpoint(ip):
 
 def generate_ip_chunks(network, chunk_size=100):
     checkpoint = load_checkpoint()
-    network = ipaddress.IPv4Network(network)
+    network = ipaddress.IPv4Network(network, strict=False)  # <-- ADD strict=False
+
     current_chunk = []
 
     for ip in network:
