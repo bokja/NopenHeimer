@@ -41,5 +41,20 @@ def scan_ip_batch(ip_list):
             print(f"[+] Found Minecraft server: {ip}")
             found += 1
 
-    redis_client.incrby("stats:scanned", len(ip_list))
-    redis_client.incrby("stats:found", found)
+    timestamp = int(time.time())
+    pipe = redis_client.pipeline()
+
+    # Track total counts
+    pipe.incrby("stats:total_scanned", len(ip_list))
+    pipe.incrby("stats:total_found", found)
+
+    # Add to sorted set for IPs/sec calc
+    pipe.zadd("stats:scans", {timestamp: timestamp})  # one per batch
+
+    # Optionally track active workers (hostname-based)
+    import socket
+    hostname = socket.gethostname()
+    pipe.setex(f"stats:worker:{hostname}", 90, "online")  # expire after 90s
+
+    pipe.execute()
+
