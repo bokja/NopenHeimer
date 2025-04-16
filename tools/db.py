@@ -44,3 +44,19 @@ def insert_server_batch(server_data):
     """
     with conn.cursor() as cur:
         execute_values(cur, query, server_data)
+
+def insert_server_info(ip, motd, players_online, players_max, version, player_names):
+    query = """
+        INSERT INTO servers (ip, motd, players_online, players_max, version, player_names)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        ON CONFLICT DO NOTHING
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (
+            ip,
+            motd,
+            players_online,
+            players_max,
+            version,
+            [name.strip() for name in player_names.split(",")] if player_names else None
+        ))

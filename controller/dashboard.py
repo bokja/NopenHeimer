@@ -1,12 +1,14 @@
 # controller/dashboard.py
 import os
 import time
-from flask import Flask, render_template, Response, jsonify
 import redis
-from shared.config import REDIS_URL
+import psycopg2
+from flask import Flask, render_template, Response, jsonify
+from shared.config import REDIS_URL, POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
 
 template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'templates'))
 app = Flask(__name__, template_folder=template_dir)
+
 redis_client = redis.Redis.from_url(REDIS_URL)
 
 @app.route("/")
@@ -21,20 +23,19 @@ def dashboard():
         if info:
             server_data.append({
                 "ip": ip,
-                "motd": info.get(b"motd", b"").decode(),
-                "players_online": info.get(b"players_online", b"0").decode(),
-                "players_max": info.get(b"players_max", b"0").decode(),
-                "player_names": info.get(b"player_names", b"").decode(),
-                "version": info.get(b"version", b"").decode()
+                "motd": info.get(b"motd", b"").decode("utf-8", errors="ignore").strip(),
+                "players_online": info.get(b"players_online", b"0").decode().strip(),
+                "players_max": info.get(b"players_max", b"0").decode().strip(),
+                "player_names": info.get(b"player_names", b"").decode("utf-8", errors="ignore").strip(),
+                "version": info.get(b"version", b"").decode("utf-8", errors="ignore").strip()
             })
 
     return render_template("dashboard.html", servers=server_data, found=len(server_data))
 
-
 @app.route("/export")
 def export():
     servers = redis_client.smembers("found_servers")
-    lines = "\n".join(sorted(ip.decode() for ip in servers))
+    lines = "\n".join(sorted(ip.decode().strip() for ip in servers))
     return Response(lines, mimetype="text/plain")
 
 @app.route("/stats")
@@ -61,7 +62,7 @@ def stats():
         "total_found": int(redis_client.get("stats:total_found") or 0),
         "active_workers": len(redis_client.keys("stats:worker:*"))
     })
-    
+
 @app.route("/server-details")
 def server_details():
     servers = redis_client.smembers("found_servers")
@@ -74,32 +75,45 @@ def server_details():
         if info:
             data.append({
                 "ip": ip,
-                "motd": info.get(b"motd", b"").decode("utf-8", errors="ignore"),
-                "players_online": info.get(b"players_online", b"0").decode(),
-                "players_max": info.get(b"players_max", b"0").decode(),
-                "player_names": info.get(b"player_names", b"").decode("utf-8", errors="ignore"),
-                "version": info.get(b"version", b"").decode("utf-8", errors="ignore"),
+                "motd": info.get(b"motd", b"").decode("utf-8", errors="ignore").strip(),
+                "players_online": info.get(b"players_online", b"0").decode().strip(),
+                "players_max": info.get(b"players_max", b"0").decode().strip(),
+                "player_names": info.get(b"player_names", b"").decode("utf-8", errors="ignore").strip(),
+                "version": info.get(b"version", b"").decode("utf-8", errors="ignore").strip()
             })
 
     return jsonify(data)
 
 @app.route("/api/servers")
 def get_servers():
-    import psycopg2
-    conn = psycopg2.connect(
-        host="postgres", dbname="mcdata",
-        user="mcscanner", password="mcscannerpass"
-    )
-    with conn.cursor() as cur:
-        cur.execute("SELECT ip, motd, players_online, players_max, player_names, version, timestamp FROM servers ORDER BY timestamp DESC LIMIT 100")
-        rows = cur.fetchall()
-        return jsonify([
-            {
-                "ip": r[0], "motd": r[1], "players_online": r[2],
-                "players_max": r[3], "player_names": r[4], "version": r[5], "timestamp": r[6].isoformat()
-            } for r in rows
-        ])
-
+    try:
+        conn = psycopg2.connect(
+            host=POSTGRES_HOST,
+            dbname=POSTGRES_DB,
+            user=POSTGRES_USER,
+            password=POSTGRES_PASSWORD
+        )
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT ip, motd, players_online, players_max, player_names, version, timestamp
+                FROM servers ORDER BY timestamp DESC LIMIT 100
+            """)
+            rows = cur.fetchall()
+            return jsonify([
+                {
+                    "ip": r[0],
+                    "motd": r[1],
+                    "players_online": r[2],
+                    "players_max": r[3],
+                    "player_names": r[4],
+                    "version": r[5],
+                    "timestamp": r[6].isoformat()
+                } for r in rows
+            ])
+    except Exception as e:
+        print("DB Error:", e)
+        return jsonify([])
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
