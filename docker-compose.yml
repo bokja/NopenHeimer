@@ -32,4 +32,20 @@ services:
     env_file: .env
     depends_on:
       - redis
+      
+    postgres:
+      image: postgres:15
+      restart: always
+      container_name: postgres
+      environment:
+        POSTGRES_USER: mcscanner
+        POSTGRES_PASSWORD: mcscannerpass
+        POSTGRES_DB: mcdata
+      ports:
+        - "5432:5432"
+      volumes:
+        - pgdata:/var/lib/postgresql/data
+
+    volumes:
+      pgdata:
 

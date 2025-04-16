@@ -83,6 +83,22 @@ def server_details():
 
     return jsonify(data)
 
+@app.route("/api/servers")
+def get_servers():
+    import psycopg2
+    conn = psycopg2.connect(
+        host="postgres", dbname="mcdata",
+        user="mcscanner", password="mcscannerpass"
+    )
+    with conn.cursor() as cur:
+        cur.execute("SELECT ip, motd, players_online, players_max, player_names, version, timestamp FROM servers ORDER BY timestamp DESC LIMIT 100")
+        rows = cur.fetchall()
+        return jsonify([
+            {
+                "ip": r[0], "motd": r[1], "players_online": r[2],
+                "players_max": r[3], "player_names": r[4], "version": r[5], "timestamp": r[6].isoformat()
+            } for r in rows
+        ])
 
 
 if __name__ == "__main__":
