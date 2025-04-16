@@ -28,7 +28,7 @@ def ping_minecraft(ip):
         pass
     return None
 
-@app.task
+@app.task(name="worker.worker.scan_ip_batch")
 def scan_ip_batch(ip_list):
     found = 0
     for ip in ip_list:
