@@ -1,228 +1,229 @@
 <!DOCTYPE html>
 <html>
 <head>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-<meta charset="UTF-8">
-<title>Minecraft Server Scanner Dashboard</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-    body {
-        font-family: 'Segoe UI', sans-serif;
-        background-color: #121212;
-        color: #f1f1f1;
-        padding: 2rem;
-    }
-    h1 {
-        margin-bottom: 0.5rem;
-    }
-    .stats, .servers {
-        margin-top: 1rem;
-        padding: 1rem;
-        background: #1e1e1e;
-        border-radius: 10px;
-    }
-    .stats div {
-        margin-bottom: 0.5rem;
-        font-size: 1.1rem;
-    }
-    .status {
-        display: inline-block;
-        padding: 4px 8px;
-        background-color: green;
-        color: white;
-        border-radius: 5px;
-        font-size: 0.9rem;
-        margin-left: 1rem;
-    }
-    table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 1rem;
-    }
-    th, td {
-        padding: 0.6rem;
-        border-bottom: 1px solid #333;
-    }
-    th {
-        text-align: left;
-        color: #bbb;
-    }
-</style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <meta charset="UTF-8">
+    <title>Minecraft Server Scanner Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #121212;
+            color: #f1f1f1;
+            padding: 2rem;
+        }
+        h1 {
+            margin-bottom: 0.5rem;
+        }
+        .stats, .servers {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: #1e1e1e;
+            border-radius: 10px;
+        }
+        .stats div {
+            margin-bottom: 0.5rem;
+            font-size: 1.1rem;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 8px;
+            background-color: green;
+            color: white;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            margin-left: 1rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        th, td {
+            padding: 0.6rem;
+            border-bottom: 1px solid #333;
+        }
+        th {
+            text-align: left;
+            color: #bbb;
+        }
+    </style>
 </head>
 <body>
-<h1>Minecraft Scanner Dashboard</h1>
+    <h1>Minecraft Scanner Dashboard</h1>
 
-<div class="stats" id="stats">
-    <div><strong>Live Stats:</strong></div>
-    <div>Total Scanned: <span id="scanned">Loading...</span></div>
-    <div>Total Found: <span id="found">Loading...</span></div>
-    <div>IPs/sec: <span id="ips">Loading...</span></div>
-    <div>Active Workers: <span id="workers">Loading...</span></div>
-</div>
+    <div class="stats" id="stats">
+        <div><strong>Live Stats:</strong></div>
+        <div>Total Scanned: <span id="scanned">Loading...</span></div>
+        <div>Total Found: <span id="found">Loading...</span></div>
+        <div>IPs/sec: <span id="ips">Loading...</span></div>
+        <div>Active Workers: <span id="workers">Loading...</span></div>
+    </div>
 
-<div class="stats" style="margin-top: 2rem;">
-    <strong>Live IPS Graph:</strong>
-    <canvas id="ipsChart" height="100"></canvas>
-</div>
+    <div class="stats" style="margin-top: 2rem;">
+        <strong>Live IPS Graph:</strong>
+        <canvas id="ipsChart" height="100"></canvas>
+    </div>
 
-<div class="servers">
-    <strong>Discovered Servers:</strong> <span id="server-count">Loading...</span>
-    <table id="server-table">
-        <thead>
-            <tr>
-                <th>#</th>
-                <th>IP Address</th>
-            </tr>
-        </thead>
-        <tbody id="server-list"></tbody>
-    </table>
-</div>
+    <div class="servers">
+        <strong>Discovered Servers:</strong> <span id="server-count">Loading...</span>
+        <table id="server-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>IP Address</th>
+                </tr>
+            </thead>
+            <tbody id="server-list"></tbody>
+        </table>
+    </div>
 
-<div class="servers">
-    <strong>Detailed Server Info:</strong>
-    <table id="server-details-table">
-        <thead>
-            <tr>
-                <th>#</th>
-                <th>IP</th>
-                <th>MOTD</th>
-                <th>Players</th>
-                <th>Names</th>
-                <th>Version</th>
-            </tr>
-        </thead>
-        <tbody id="server-details-body"></tbody>
-    </table>
-</div>
+    <div class="servers">
+        <strong>Detailed Server Info:</strong>
+        <table id="server-details-table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>IP</th>
+                    <th>MOTD</th>
+                    <th>Players</th>
+                    <th>Names</th>
+                    <th>Version</th>
+                </tr>
+            </thead>
+            <tbody id="server-details-body"></tbody>
+        </table>
+    </div>
 
-<script>
-async function fetchStats() {
-    try {
-        const res = await fetch("/stats");
-        const data = await res.json();
-        document.getElementById("scanned").textContent = data.total_scanned;
-        document.getElementById("found").textContent = data.total_found;
-        document.getElementById("ips").textContent = data.ips_per_sec;
-        document.getElementById("workers").textContent = data.active_workers;
-    } catch (e) {
-        console.error("Failed to fetch stats", e);
-    }
-}
-
-async function fetchServers() {
-    try {
-        const res = await fetch("/export");
-        const text = await res.text();
-        const lines = text.trim().split("\n").filter(line => line);
-        const tbody = document.getElementById("server-list");
-        const count = document.getElementById("server-count");
-        tbody.innerHTML = "";
-        lines.forEach((ip, i) => {
-            const row = document.createElement("tr");
-            row.innerHTML = `<td>${i + 1}</td><td>${ip}</td>`;
-            tbody.appendChild(row);
-        });
-        count.textContent = lines.length;
-    } catch (e) {
-        console.error("Failed to fetch servers", e);
-    }
-}
-
-async function fetchServerDetails() {
-    try {
-        const res = await fetch("/server-details");
-        const data = await res.json();
-        const tbody = document.getElementById("server-details-body");
-        tbody.innerHTML = "";
-
-        data.forEach((server, i) => {
-            const row = document.createElement("tr");
-            row.innerHTML = `
-                <td>${i + 1}</td>
-                <td>${server.ip}</td>
-                <td>${server.motd || "—"}</td>
-                <td>${server.players_online} / ${server.players_max}</td>
-                <td>${(server.player_names || []).join(", ") || "—"}</td>
-                <td>${server.version || "—"}</td>
-            `;
-            tbody.appendChild(row);
-        });
-    } catch (e) {
-        console.error("Failed to fetch detailed server info", e);
-    }
-}
-
-function refreshAll() {
-    fetchStats();
-    fetchServers();
-    fetchServerDetails();
-}
-</script>
-
-<script>
-const ctx = document.getElementById('ipsChart').getContext('2d');
-const ipsChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-        labels: [],
-        datasets: [{
-            label: 'IPs/sec',
-            data: [],
-            borderColor: 'rgba(0, 200, 255, 0.8)',
-            borderWidth: 2,
-            tension: 0.3,
-            pointRadius: 0
-        }]
-    },
-    options: {
-        responsive: true,
-        scales: {
-            x: { ticks: { color: '#ccc' } },
-            y: {
-                beginAtZero: true,
-                ticks: { color: '#ccc' }
+    <script>
+        async function fetchStats() {
+            try {
+                const res = await fetch("/stats");
+                const data = await res.json();
+                document.getElementById("scanned").textContent = data.total_scanned;
+                document.getElementById("found").textContent = data.total_found;
+                document.getElementById("ips").textContent = data.ips_per_sec;
+                document.getElementById("workers").textContent = data.active_workers;
+            } catch (e) {
+                console.error("Failed to fetch stats", e);
             }
-        },
-        plugins: {
-            legend: { labels: { color: '#ccc' } }
         }
-    }
-});
 
-const maxPoints = 60;
-
-async function updateGraph() {
-    try {
-        const res = await fetch("/stats");
-        const data = await res.json();
-        const now = new Date().toLocaleTimeString();
-
-        document.getElementById("scanned").textContent = data.total_scanned;
-        document.getElementById("found").textContent = data.total_found;
-        document.getElementById("ips").textContent = data.ips_per_sec;
-        document.getElementById("workers").textContent = data.active_workers;
-
-        ipsChart.data.labels.push(now);
-        ipsChart.data.datasets[0].data.push(data.ips_per_sec);
-
-        if (ipsChart.data.labels.length > maxPoints) {
-            ipsChart.data.labels.shift();
-            ipsChart.data.datasets[0].data.shift();
+        async function fetchServers() {
+            try {
+                const res = await fetch("/export");
+                const text = await res.text();
+                const lines = text.trim().split("\n").filter(line => line);
+                const tbody = document.getElementById("server-list");
+                const count = document.getElementById("server-count");
+                tbody.innerHTML = "";
+                lines.forEach((ip, i) => {
+                    const row = document.createElement("tr");
+                    row.innerHTML = `<td>${i + 1}</td><td>${ip}</td>`;
+                    tbody.appendChild(row);
+                });
+                count.textContent = lines.length;
+            } catch (e) {
+                console.error("Failed to fetch servers", e);
+            }
         }
-        ipsChart.update();
-    } catch (e) {
-        console.error("Graph refresh error", e);
-    }
-}
 
-setInterval(() => {
-    refreshAll();
-    updateGraph();
-}, 5000);
+        async function fetchServerDetails() {
+            try {
+                const res = await fetch("/server-details");
+                const data = await res.json();
+                const tbody = document.getElementById("server-details-body");
+                tbody.innerHTML = "";
 
-refreshAll();
-updateGraph();
-</script>
+                data.forEach((server, i) => {
+                    const playerNames = Array.isArray(server.player_names)
+                        ? server.player_names.join(", ")
+                        : (server.player_names || "—");
+
+                    const row = document.createElement("tr");
+                    row.innerHTML = `
+                        <td>${i + 1}</td>
+                        <td>${server.ip}</td>
+                        <td>${server.motd || "—"}</td>
+                        <td>${server.players_online} / ${server.players_max}</td>
+                        <td>${playerNames}</td>
+                        <td>${server.version || "—"}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (e) {
+                console.error("Failed to fetch detailed server info", e);
+            }
+        }
+
+        function refreshAll() {
+            fetchStats();
+            fetchServers();
+            fetchServerDetails();
+        }
+
+        const ctx = document.getElementById('ipsChart').getContext('2d');
+        const ipsChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'IPs/sec',
+                    data: [],
+                    borderColor: 'rgba(0, 200, 255, 0.8)',
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    x: { ticks: { color: '#ccc' } },
+                    y: {
+                        beginAtZero: true,
+                        ticks: { color: '#ccc' }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: '#ccc' } }
+                }
+            }
+        });
+
+        const maxPoints = 60;
+
+        async function updateGraph() {
+            try {
+                const res = await fetch("/stats");
+                const data = await res.json();
+                const now = new Date().toLocaleTimeString();
+
+                document.getElementById("scanned").textContent = data.total_scanned;
+                document.getElementById("found").textContent = data.total_found;
+                document.getElementById("ips").textContent = data.ips_per_sec;
+                document.getElementById("workers").textContent = data.active_workers;
+
+                ipsChart.data.labels.push(now);
+                ipsChart.data.datasets[0].data.push(data.ips_per_sec);
+
+                if (ipsChart.data.labels.length > maxPoints) {
+                    ipsChart.data.labels.shift();
+                    ipsChart.data.datasets[0].data.shift();
+                }
+                ipsChart.update();
+            } catch (e) {
+                console.error("Graph refresh error", e);
+            }
+        }
+
+        setInterval(() => {
+            refreshAll();
+            updateGraph();
+        }, 5000);
+
+        refreshAll();
+        updateGraph();
+    </script>
 </body>
 </html>
