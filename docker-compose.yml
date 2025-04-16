@@ -6,6 +6,19 @@ services:
     ports:
       - "6379:6379"
 
+  postgres:
+    image: postgres:15
+    restart: always
+    container_name: postgres
+    environment:
+      POSTGRES_USER: mcscanner
+      POSTGRES_PASSWORD: mcscannerpass
+      POSTGRES_DB: mcdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
   controller:
     build: .
     container_name: controller
@@ -13,6 +26,7 @@ services:
     env_file: .env
     depends_on:
       - redis
+      - postgres
 
   dashboard:
     build: .
@@ -25,6 +39,7 @@ services:
     env_file: .env
     depends_on:
       - redis
+      - postgres
 
   worker:
     build: .
@@ -32,20 +47,7 @@ services:
     env_file: .env
     depends_on:
       - redis
-      
-    postgres:
-      image: postgres:15
-      restart: always
-      container_name: postgres
-      environment:
-        POSTGRES_USER: mcscanner
-        POSTGRES_PASSWORD: mcscannerpass
-        POSTGRES_DB: mcdata
-      ports:
-        - "5432:5432"
-      volumes:
-        - pgdata:/var/lib/postgresql/data
+      - postgres
 
-    volumes:
-      pgdata:
-
+volumes:
+  pgdata:
