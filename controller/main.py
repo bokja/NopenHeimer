@@ -6,6 +6,7 @@ from tqdm import tqdm
 from celery import Celery
 from shared.config import REDIS_URL
 from worker.worker import chunk_size
+import redis
 
 app = Celery('controller', broker=REDIS_URL)
 
