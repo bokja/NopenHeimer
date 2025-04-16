@@ -22,7 +22,7 @@ def save_checkpoint(ip):
     with open(CHECKPOINT_FILE, "w") as f:
         f.write(str(ip))
 
-def generate_ip_chunks(network, chunk_size=100):
+def generate_ip_chunks(network, chunk_size=20):
     checkpoint = load_checkpoint()
     network = ipaddress.IPv4Network(network, strict=False)  # <-- ADD strict=False
 
