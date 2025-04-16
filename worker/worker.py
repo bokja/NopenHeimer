@@ -29,6 +29,8 @@ def ping_minecraft(ip):
         pass
     return None
 
+import random
+
 @app.task(name="worker.worker.scan_ip_batch")
 def scan_ip_batch(ip_list):
     hostname = socket.gethostname()
@@ -46,15 +48,18 @@ def scan_ip_batch(ip_list):
             print(f"[{hostname}] [+] Found: {ip}")
             found += 1
 
-    # ✅ Redis stat tracking
+    # Stats
     timestamp = int(time.time())
     pipe = redis_client.pipeline()
-
     pipe.incrby("stats:total_scanned", len(ip_list))
     pipe.incrby("stats:total_found", found)
-    pipe.zadd("stats:scans", {timestamp: timestamp})  # add one per batch
-    pipe.setex(f"stats:worker:{hostname}", 90, "online")  # expire after 90s
-
+    pipe.zadd("stats:scans", {timestamp: timestamp})
+    pipe.setex(f"stats:worker:{hostname}", 90, "online")
     pipe.execute()
 
     print(f"[{hostname}] Finished. Found {found}, scanned {len(ip_list)}.")
+
+    # ✅ Ratelimit between batches
+    delay = random.uniform(1, 3)
+    print(f"[{hostname}] Sleeping for {delay:.2f}s before next batch")
+    time.sleep(delay)
