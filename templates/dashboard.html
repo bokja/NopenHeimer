@@ -82,6 +82,24 @@
             <tbody id="server-list"></tbody>
         </table>
     </div>
+	
+	<div class="servers">
+    <strong>Detailed Server Info:</strong>
+    <table id="server-details-table">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>IP</th>
+                <th>MOTD</th>
+                <th>Players</th>
+                <th>Names</th>
+                <th>Version</th>
+            </tr>
+        </thead>
+        <tbody id="server-details-body"></tbody>
+    </table>
+</div>
+
 
     <script>
         async function fetchStats() {
@@ -115,10 +133,35 @@
                 console.error("Failed to fetch servers", e);
             }
         }
+		async function fetchServerDetails() {
+    try {
+        const res = await fetch("/server-details");
+        const data = await res.json();
+        const tbody = document.getElementById("server-details-body");
+        tbody.innerHTML = "";
+
+        data.forEach((server, i) => {
+            const row = document.createElement("tr");
+            row.innerHTML = `
+                <td>${i + 1}</td>
+                <td>${server.ip}</td>
+                <td>${server.motd}</td>
+                <td>${server.players_online} / ${server.players_max}</td>
+                <td>${server.player_names || "-"}</td>
+                <td>${server.version}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    } catch (e) {
+        console.error("Failed to fetch detailed server info", e);
+    }
+}
+
 
         function refresh() {
             fetchStats();
             fetchServers();
+			fetchServerDetails(); 
         }
 
         setInterval(refresh, 5000);
@@ -126,6 +169,8 @@
 		
 		
     </script>
+	
+	
 	<script>
     const ctx = document.getElementById('ipsChart').getContext('2d');
     const ipsChart = new Chart(ctx, {
