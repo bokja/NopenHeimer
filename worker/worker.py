@@ -4,6 +4,7 @@ from celery import Celery
 import redis
 from shared.config import REDIS_URL
 from tools.db import insert_server_info  # PostgreSQL helper
+import uuid
 
 # Initialize Celery
 app = Celery("worker", broker=REDIS_URL)
@@ -89,7 +90,8 @@ def scan_ip_batch(ip_list):
     pipe = redis_client.pipeline()
     pipe.incrby("stats:total_scanned", len(ip_list))
     pipe.incrby("stats:total_found", found)
-    pipe.zadd("stats:scans", {f"{timestamp}:{len(ip_list)}": timestamp})
+    pipe.zadd("stats:scans", {f"{timestamp}:{len(ip_list)}:{uuid.uuid4()}": timestamp})
+
     pipe.setex(f"stats:worker:{hostname}", 90, "online")
     pipe.execute()
 

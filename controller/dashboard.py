@@ -49,10 +49,12 @@ def stats():
 
     for entry in scan_entries:
         try:
-            _, count = entry.decode().split(":")
-            ips_recent += int(count)
+            parts = entry.decode().split(":")
+            if len(parts) >= 2:
+                ips_recent += int(parts[1])
         except:
             continue
+
 
     ips_per_second = ips_recent / window if window else 0
 
