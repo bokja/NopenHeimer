@@ -9,7 +9,7 @@ from worker.worker import chunk_size
 # Setup Celery
 app = Celery('controller', broker=REDIS_URL)
 
-NETWORK_TO_SCAN = "172.62.0.0/12"
+NETWORK_TO_SCAN = "172.65.0.0/12"
 CHECKPOINT_FILE = "checkpoint.txt"
 
 def load_checkpoint():
