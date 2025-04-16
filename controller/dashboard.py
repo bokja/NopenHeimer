@@ -1,14 +1,12 @@
+# controller/dashboard.py
 import os
 import time
 from flask import Flask, render_template, Response, jsonify
 import redis
 from shared.config import REDIS_URL
 
-# Force correct template path (for Docker safety)
 template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'templates'))
 app = Flask(__name__, template_folder=template_dir)
-
-# Connect to Redis
 redis_client = redis.Redis.from_url(REDIS_URL)
 
 @app.route("/")
@@ -31,10 +29,18 @@ def export():
 @app.route("/stats")
 def stats():
     now = int(time.time())
-    window = 60  # seconds
+    window = 60
     start_time = now - window
 
-    ips_recent = redis_client.zcount("stats:scans", start_time, now)
+    ips_recent = 0
+    scan_entries = redis_client.zrangebyscore("stats:scans", start_time, now, withscores=False)
+    for entry in scan_entries:
+        try:
+            _, count = entry.decode().split(":")
+            ips_recent += int(count)
+        except:
+            continue
+
     ips_per_second = ips_recent / window if window else 0
 
     return jsonify({

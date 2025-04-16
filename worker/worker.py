@@ -1,3 +1,4 @@
+# worker/worker.py
 import socket
 import time
 from celery import Celery
@@ -9,7 +10,7 @@ redis_client = redis.Redis.from_url(REDIS_URL)
 
 target_port = 25565
 timeout = 0.3
-chunk_size = 20
+chunk_size = 20  # Shared with controller
 
 def is_port_open(ip, port=target_port):
     try:
@@ -21,7 +22,7 @@ def is_port_open(ip, port=target_port):
 def ping_minecraft(ip):
     try:
         with socket.create_connection((ip, target_port), timeout=timeout) as s:
-            s.sendall(b'\xfe')  # Legacy ping
+            s.sendall(b'\xfe')
             response = s.recv(1024)
             if response and response.startswith(b'\xff'):
                 return response
@@ -46,14 +47,14 @@ def scan_ip_batch(ip_list):
             print(f"[{hostname}] [+] Found: {ip}")
             found += 1
 
-    # ✅ Redis stat tracking
     timestamp = int(time.time())
     pipe = redis_client.pipeline()
 
+    # NEW: Add real scanned count into zset entry
     pipe.incrby("stats:total_scanned", len(ip_list))
     pipe.incrby("stats:total_found", found)
-    pipe.zadd("stats:scans", {timestamp: timestamp})  # add one per batch
-    pipe.setex(f"stats:worker:{hostname}", 90, "online")  # expire after 90s
+    pipe.zadd("stats:scans", {f"{timestamp}:{len(ip_list)}": timestamp})
+    pipe.setex(f"stats:worker:{hostname}", 90, "online")
 
     pipe.execute()
 

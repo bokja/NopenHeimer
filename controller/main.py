@@ -1,3 +1,4 @@
+# controller/main.py
 import ipaddress
 import time
 import os
@@ -6,7 +7,6 @@ from celery import Celery
 from shared.config import REDIS_URL
 from worker.worker import chunk_size
 
-# Setup Celery
 app = Celery('controller', broker=REDIS_URL)
 
 NETWORK_TO_SCAN = "172.65.0.0/12"
@@ -24,10 +24,9 @@ def save_checkpoint(ip):
 
 def generate_ip_chunks(network, chunk_size=20):
     checkpoint = load_checkpoint()
-    network = ipaddress.IPv4Network(network, strict=False)  # <-- ADD strict=False
+    network = ipaddress.IPv4Network(network, strict=False)
 
     current_chunk = []
-
     for ip in network:
         if checkpoint and ip <= checkpoint:
             continue
@@ -46,10 +45,6 @@ def main():
     for chunk in tqdm(generate_ip_chunks(NETWORK_TO_SCAN, chunk_size), desc="Dispatching"):
         app.send_task("worker.worker.scan_ip_batch", args=[chunk])
         total_dispatched += len(chunk)
-
-        # Optional: throttle dispatch if Redis/CPU is choking
-        # time.sleep(0.1)
-
     print(f"Dispatched {total_dispatched} IPs total.")
 
 if __name__ == "__main__":
