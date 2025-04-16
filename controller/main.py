@@ -1,40 +1,55 @@
 import ipaddress
-import redis
 import time
+import os
 from tqdm import tqdm
-from worker.worker import scan_ip
-from shared.config import NETWORK_TO_SCAN, REDIS_URL
+from celery import Celery
+from shared.config import REDIS_URL
+from worker.worker import chunk_size
 
-redis_client = redis.Redis.from_url(REDIS_URL)
+# Setup Celery
+app = Celery('controller', broker=REDIS_URL)
 
-CHUNK_SIZE = 100
+NETWORK_TO_SCAN = "172.62.0.0/12"
+CHECKPOINT_FILE = "checkpoint.txt"
 
-def generate_new_ips():
-    network = ipaddress.IPv4Network(NETWORK_TO_SCAN)
+def load_checkpoint():
+    if os.path.exists(CHECKPOINT_FILE):
+        with open(CHECKPOINT_FILE, "r") as f:
+            return ipaddress.IPv4Address(f.read().strip())
+    return None
+
+def save_checkpoint(ip):
+    with open(CHECKPOINT_FILE, "w") as f:
+        f.write(str(ip))
+
+def generate_ip_chunks(network, chunk_size=100):
+    checkpoint = load_checkpoint()
+    network = ipaddress.IPv4Network(network)
+    current_chunk = []
+
     for ip in network:
-        ip_str = str(ip)
-        if redis_client.exists(f"scanned:{ip_str}"):
+        if checkpoint and ip <= checkpoint:
             continue
-        yield ip_str
+        current_chunk.append(str(ip))
+        if len(current_chunk) >= chunk_size:
+            yield current_chunk
+            save_checkpoint(ip)
+            current_chunk = []
+    if current_chunk:
+        yield current_chunk
+        save_checkpoint(ipaddress.IPv4Address(current_chunk[-1]))
 
 def main():
-    ip_gen = generate_new_ips()
-    batch = []
-    total = 0
-    pbar = tqdm(desc="Scanning", unit="ip")
+    print(f"Dispatching IP scan batches from {NETWORK_TO_SCAN}")
+    total_dispatched = 0
+    for chunk in tqdm(generate_ip_chunks(NETWORK_TO_SCAN, chunk_size), desc="Dispatching"):
+        app.send_task("worker.worker.scan_ip_batch", args=[chunk])
+        total_dispatched += len(chunk)
 
-    for ip in ip_gen:
-        batch.append(ip)
-        if len(batch) < CHUNK_SIZE:
-            continue
+        # Optional: throttle dispatch if Redis/CPU is choking
+        # time.sleep(0.1)
 
-        results = [scan_ip.delay(ip) for ip in batch]
-        total += len(batch)
-        pbar.update(len(batch))
-        batch = []
-        time.sleep(5)
-
-    print(f"Dispatched {total} IPs.")
+    print(f"Dispatched {total_dispatched} IPs total.")
 
 if __name__ == "__main__":
     main()
