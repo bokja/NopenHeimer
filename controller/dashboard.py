@@ -38,6 +38,7 @@ def export():
     lines = "\n".join(sorted(ip.decode().strip() for ip in servers))
     return Response(lines, mimetype="text/plain")
 
+
 @app.route("/stats")
 def stats():
     now = int(time.time())
@@ -97,6 +98,12 @@ def server_details():
 @app.route("/api/servers")
 def get_servers():
     return server_details()
+    
+@app.route("/range")
+def current_range():
+    value = redis_client.get("current_range")
+    return jsonify({"range": value.decode() if value else "Unknown"})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)

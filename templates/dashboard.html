@@ -58,6 +58,7 @@
         <div>Total Found: <span id="found">Loading...</span></div>
         <div>IPs/sec: <span id="ips">Loading...</span></div>
         <div>Active Workers: <span id="workers">Loading...</span></div>
+		<div>Currently Scanning: <span id="range">Loading...</span></div>
     </div>
 
     <div class="stats" style="margin-top: 2rem;">
@@ -160,6 +161,7 @@
             fetchStats();
             fetchServers();
             fetchServerDetails();
+			fetchRange(); 
         }
 
         const ctx = document.getElementById('ipsChart').getContext('2d');
@@ -224,6 +226,17 @@
 
         refreshAll();
         updateGraph();
+		
+		async function fetchRange() {
+    try {
+        const res = await fetch("/range");
+        const data = await res.json();
+        document.getElementById("range").textContent = data.range || "Unknown";
+    } catch (e) {
+        console.error("Failed to fetch range", e);
+    }
+}
+
     </script>
 </body>
 </html>
