@@ -4,3 +4,4 @@ tqdm
 Flask
 python-dotenv
 eventlet
+psycopg2-binary
