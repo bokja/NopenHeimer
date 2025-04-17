@@ -5,6 +5,7 @@ import redis
 from celery import Celery
 from shared.config import REDIS_URL
 from tools.db import insert_server_info  # PostgreSQL helper
+from tools.mc_ping import ping_server  # Unified Minecraft ping
 
 # Initialize Celery and Redis
 app = Celery("worker", broker=REDIS_URL)
@@ -22,29 +23,6 @@ def is_port_open(ip, port=target_port):
     except Exception:
         return False
 
-def ping_minecraft(ip):
-    try:
-        with socket.create_connection((ip, target_port), timeout=timeout) as s:
-            s.sendall(b'\xfe')  # Legacy ping
-            return s.recv(1024)
-    except Exception:
-        return None
-
-def parse_legacy_ping(response):
-    try:
-        data = response.decode("utf-16be")[3:].split("§")
-        if len(data) >= 5:
-            return {
-                "motd": data[0],
-                "players_online": int(data[1]),
-                "players_max": int(data[2]),
-                "version": data[3],
-                "player_names": data[4] if data[4] else None
-            }
-    except Exception as e:
-        print(f"[!] Failed to parse ping: {e}")
-    return None
-
 @app.task(name="worker.worker.scan_ip_batch")
 def scan_ip_batch(ip_list):
     hostname = socket.gethostname()
@@ -57,29 +35,34 @@ def scan_ip_batch(ip_list):
         if not is_port_open(ip):
             continue
 
-        response = ping_minecraft(ip)
-        if response:
-            parsed = parse_legacy_ping(response)
+        result = ping_server(ip)
+        if result:
+            motd = result.get("motd") or ""
+            players_online = result.get("players_online") or 0
+            players_max = result.get("players_max") or 0
+            version = result.get("version") or "unknown"
+            player_names = result.get("player_names") or []
+
+            print(f"[{hostname}] [+] {ip} - {motd} [{players_online}/{players_max}] - {version}")
+
+            # Save to Redis
             redis_client.sadd("found_servers", ip)
             found += 1
 
-            if parsed:
-                print(f"[{hostname}] [+] {ip} - {parsed['motd']} [{parsed['players_online']}/{parsed['players_max']}]")
-
-                # Save to PostgreSQL
-                try:
-                    insert_server_info(
-                        ip=ip,
-                        motd=parsed.get("motd"),
-                        players_online=parsed.get("players_online"),
-                        players_max=parsed.get("players_max"),
-                        version=parsed.get("version"),
-                        player_names=parsed.get("player_names")
-                    )
-                except Exception as e:
-                    print(f"[!] Failed to insert {ip} into DB: {e}")
-            else:
-                print(f"[{hostname}] [+] Found (unparsed): {ip}")
+            # Save to PostgreSQL
+            try:
+                insert_server_info(
+                    ip=ip,
+                    motd=motd,
+                    players_online=players_online,
+                    players_max=players_max,
+                    version=version,
+                    player_names=player_names
+                )
+            except Exception as e:
+                print(f"[!] Failed to insert {ip} into DB: {e}")
+        else:
+            print(f"[{hostname}] [-] No response from {ip}")
 
     # Redis Stats
     pipe = redis_client.pipeline()

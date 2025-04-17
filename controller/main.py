@@ -10,7 +10,7 @@ import redis
 
 app = Celery('controller', broker=REDIS_URL)
 
-NETWORK_TO_SCAN = "0.0.0.0/0"  # Full internet scan
+NETWORK_TO_SCAN = config.NETWORK_TO_SCAN  # Full internet scan
 CHECKPOINT_FILE = "checkpoint.txt"
 EXCLUDE_FILE = "exclude.conf"
 
