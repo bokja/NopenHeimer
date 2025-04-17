@@ -2,7 +2,11 @@ import socket
 import traceback
 import redis
 from tools.mc_ping import ping_server, ping_modern, ping_legacy, parse_legacy_ping
+from dotenv import load_dotenv
+load_dotenv()
+
 from tools.db import insert_server_info
+
 from shared.config import REDIS_URL, POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
 
 # Setup Redis client
