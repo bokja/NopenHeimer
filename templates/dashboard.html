@@ -112,7 +112,7 @@
 
         async function fetchServers() {
             try {
-                const res = await fetch("/export");
+                const res = await fetch("/export?limit=100");
                 const text = await res.text();
                 const lines = text.trim().split("\n").filter(line => line);
                 const tbody = document.getElementById("server-list");

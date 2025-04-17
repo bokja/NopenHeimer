@@ -34,9 +34,12 @@ def dashboard():
 
 @app.route("/export")
 def export():
+    limit = int(request.args.get("limit", 100))  # Default to 100
     servers = redis_client.smembers("found_servers")
-    lines = "\n".join(sorted(ip.decode().strip() for ip in servers))
+    ip_list = sorted(ip.decode().strip() for ip in servers)
+    lines = "\n".join(ip_list[:limit])
     return Response(lines, mimetype="text/plain")
+
 
 
 @app.route("/stats")
