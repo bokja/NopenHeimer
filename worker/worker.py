@@ -44,12 +44,9 @@ def scan_ip_batch(ip_list):
             player_names = result.get("player_names") or []
 
             print(f"[{hostname}] [+] {ip} - {motd} [{players_online}/{players_max}] - {version}")
-
-            # Save to Redis
             redis_client.sadd("found_servers", ip)
             found += 1
 
-            # Save to PostgreSQL
             try:
                 insert_server_info(
                     ip=ip,
@@ -61,8 +58,24 @@ def scan_ip_batch(ip_list):
                 )
             except Exception as e:
                 print(f"[!] Failed to insert {ip} into DB: {e}")
+
         else:
-            print(f"[{hostname}] [-] No response from {ip}")
+            print(f"[{hostname}] [-] No MC ping from {ip} (port open)")
+            
+            # Insert as offline server (port open, no response)
+            try:
+                insert_server_info(
+                    ip=ip,
+                    motd="[OFFLINE]",
+                    players_online=0,
+                    players_max=0,
+                    version="unknown",
+                    player_names=[]
+                )
+                print(f"[{hostname}] [•] Offline server recorded: {ip}")
+            except Exception as e:
+                print(f"[!] Failed to insert offline {ip} into DB: {e}")
+
 
     # Redis Stats
     pipe = redis_client.pipeline()
