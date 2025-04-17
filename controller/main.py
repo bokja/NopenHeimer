@@ -105,6 +105,12 @@ def main():
 
     while True:
         available_networks = list(set(NETWORK_POOL) - used_networks)
+        available_networks = [
+            net for net in available_networks
+            if has_unscanned_ips(net)
+        ]
+
+        
         if not available_networks:
             print("✅ All networks completed. Shuffling and restarting...")
             used_networks.clear()
@@ -116,10 +122,25 @@ def main():
         print(f"🚀 Scanning: {network}")
         redis_client.set("current_range", network)
 
+        chunk_count = 0
         for chunk in tqdm(generate_ip_chunks(network, chunk_size), desc=f"Dispatching {network}"):
             app.send_task("worker.worker.scan_ip_batch", args=[chunk])
+            chunk_count += 1
+
+        if chunk_count == 0:
+            print(f"⚠️ Nothing to scan in {network}. Skipping...")
+            continue  # move on to another random network
+
 
         print(f"✅ Finished scanning {network}\n")
+
+def has_unscanned_ips(network_str):
+    net = ipaddress.IPv4Network(network_str, strict=False)
+    checkpoint = load_checkpoint(network_str)
+    if checkpoint and checkpoint >= net.broadcast_address:
+        return False
+    return True
+
 
 if __name__ == "__main__":
     main()
