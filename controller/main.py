@@ -5,7 +5,6 @@ import os
 from tqdm import tqdm
 from celery import Celery
 from shared import config
-
 from shared.config import REDIS_URL
 from worker.worker import chunk_size
 import redis
@@ -35,14 +34,32 @@ def load_exclusions():
                 if not line or line.startswith("#"):
                     continue
                 try:
-                    excluded.append(ipaddress.IPv4Network(line, strict=False))
+                    if '-' in line:
+                        # Handle range format: 1.2.3.4-1.2.3.255
+                        start_ip, end_ip = map(str.strip, line.split('-'))
+                        start_ip = ipaddress.IPv4Address(start_ip)
+                        end_ip = ipaddress.IPv4Address(end_ip)
+                        excluded.append((start_ip, end_ip))  # Mark it as a tuple
+                    else:
+                        # Handle CIDR format
+                        excluded.append(ipaddress.IPv4Network(line, strict=False))
                 except Exception as e:
                     print(f"[!] Invalid exclude range '{line}': {e}")
     return excluded
 
 
+
 def is_excluded(ip, excluded_ranges):
-    return any(ip in net for net in excluded_ranges)
+    ip = ipaddress.IPv4Address(ip)
+    for rule in excluded_ranges:
+        if isinstance(rule, tuple):
+            # IP range: (start_ip, end_ip)
+            if rule[0] <= ip <= rule[1]:
+                return True
+        elif ip in rule:
+            return True
+    return False
+
 
 def generate_ip_chunks(network, chunk_size=20):
     checkpoint = load_checkpoint()
