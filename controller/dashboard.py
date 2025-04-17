@@ -100,9 +100,9 @@ def get_servers():
     return server_details()
     
 @app.route("/range")
-def current_range():
-    value = redis_client.get("current_range")
-    return jsonify({"range": value.decode() if value else "Unknown"})
+def get_range():
+    current_range = redis_client.get("current_range")
+    return jsonify({"range": current_range.decode() if current_range else "Unknown"})
 
 
 if __name__ == "__main__":

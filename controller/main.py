@@ -4,6 +4,8 @@ import time
 import os
 from tqdm import tqdm
 from celery import Celery
+from shared import config
+
 from shared.config import REDIS_URL
 from worker.worker import chunk_size
 import redis
