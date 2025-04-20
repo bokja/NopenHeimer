@@ -1,258 +1,292 @@
-# NopenHeimer/shared/db.py - IMPROVED Version (Pooling + Logging)
+# shared/db.py (or wherever your db functions are)
 import psycopg2
-from psycopg2 import pool # Import pool directly
-from psycopg2 import OperationalError, ProgrammingError
-from psycopg2.extras import execute_values # Keep for batch function stub
+from psycopg2.pool import SimpleConnectionPool
+from psycopg2.extras import execute_values
 import os
-import time
-
-# Use shared logger and config
-# Assuming logger.py and config.py are in the same shared/ directory
-try:
-    from shared.logger import get_logger
-    from shared.config import POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, DB_MIN_CONN, DB_MAX_CONN
-except ImportError:
-    # Fallback if run standalone or structure issue
-    print("ERROR: Could not import logger/config from shared.", file=sys.stderr)
-    # Attempt to load directly - less ideal
-    import logging as log
-    log.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    from dotenv import load_dotenv
-    load_dotenv() # Load .env from current dir or parent
-    POSTGRES_HOST = os.getenv("POSTGRES_HOST")
-    POSTGRES_DB = os.getenv("POSTGRES_DB")
-    POSTGRES_USER = os.getenv("POSTGRES_USER")
-    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
-    DB_MIN_CONN = int(os.getenv("DB_MIN_CONN", 5))
-    DB_MAX_CONN = int(os.getenv("DB_MAX_CONN", 50))
-
-
-log = get_logger("db")
+import ipaddress # Import ipaddress here or pass string representations
 
 # --- Connection Pooling ---
-db_pool = None
+DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
+DB_NAME = os.getenv("POSTGRES_DB", "mcdata")
+DB_USER = os.getenv("POSTGRES_USER", "mcscanner")
+DB_PASS = os.getenv("POSTGRES_PASSWORD", "mcscannerpass")
+MIN_CONN = 1
+MAX_CONN = 10 # Adjust as needed based on controller/worker count
+
+print("[DB] Initializing Connection Pool...")
 try:
-    # Validate that config variables were loaded
-    if not all([POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD]):
-        raise ValueError("Database connection details missing in environment/config.")
-
-    log.info(f"Initializing DB Connection Pool (Min:{DB_MIN_CONN}, Max:{DB_MAX_CONN}) for {POSTGRES_HOST}/{POSTGRES_DB}...")
-    # Using ThreadedConnectionPool as it's generally safe for multi-threaded apps like Celery workers
-    db_pool = psycopg2.pool.ThreadedConnectionPool(
-        minconn=DB_MIN_CONN,
-        maxconn=DB_MAX_CONN,
-        host=POSTGRES_HOST,
-        dbname=POSTGRES_DB,
-        user=POSTGRES_USER,
-        password=POSTGRES_PASSWORD,
-        connect_timeout=10 # Add a connection timeout
-    )
-    # Test getting a connection
-    conn = db_pool.getconn()
-    log.info(f"Connection Pool test successful. Pool initialized.")
-    db_pool.putconn(conn) # Return the test connection immediately
-except OperationalError as e:
-    log.critical(f"FATAL: Database connection error during pool initialization: {e}")
-    db_pool = None
-except ValueError as e:
-    log.critical(f"FATAL: Configuration error during pool initialization: {e}")
-    db_pool = None
+    pool = SimpleConnectionPool(MIN_CONN, MAX_CONN,
+                                host=DB_HOST,
+                                dbname=DB_NAME,
+                                user=DB_USER,
+                                password=DB_PASS)
+    print(f"[DB] Connection Pool initialized (Min: {MIN_CONN}, Max: {MAX_CONN})")
 except Exception as e:
-    log.critical(f"FATAL: An unexpected error occurred during DB pool initialization: {e}", exc_info=True)
-    db_pool = None
+    print(f"[DB FATAL] Failed to initialize connection pool: {e}")
+    pool = None # Ensure pool is None if init fails
 
+def get_connection():
+    if pool is None:
+        raise Exception("Database connection pool is not available.")
+    return pool.getconn()
 
-class DBPoolConnection:
-    """Context manager for safely acquiring and releasing pool connections."""
-    def __init__(self):
-        self.conn = None
-        self.cursor = None
+def put_connection(conn):
+    if pool is not None:
+        pool.putconn(conn)
 
-    def __enter__(self):
-        if db_pool is None:
-            log.error("DB pool accessed before initialization or after failure.")
-            raise ConnectionError("Database connection pool is not available.")
-
-        retries = 3 # Number of retries to get a connection
-        delay = 1 # Initial delay in seconds
-        last_exception = None
-
-        while retries > 0:
-            try:
-                self.conn = db_pool.getconn()
-                # Optional: Check if connection is actually usable? (e.g., self.conn.closed)
-                if self.conn.closed:
-                     log.warning("Retrieved a closed connection from pool, trying again.")
-                     # Discard this connection, don't put it back yet
-                     self.conn = None # Prevent putconn in finally
-                     raise pool.PoolError("Retrieved closed connection")
-
-                self.conn.autocommit = False # Use standard transaction handling
-                self.cursor = self.conn.cursor()
-                log.debug("Acquired DB connection from pool.")
-                return self.cursor # Return cursor for 'with ... as cur:' usage
-            except pool.PoolError as e: # Catch pool specific errors (e.g., pool full)
-                last_exception = e
-                retries -= 1
-                log.warning(f"Failed to get connection from pool ({e}). Retries left: {retries}. Waiting {delay}s...")
-                if retries == 0:
-                    log.error("Max retries exceeded trying to get DB connection from pool.")
-                    raise ConnectionError("Could not get connection from DB pool.") from e
-                time.sleep(delay)
-                delay *= 2 # Exponential backoff
-            except OperationalError as e:
-                 log.error(f"Database operational error on getconn: {e}")
-                 # Don't retry on operational errors like bad password? Or do? Let's retry for robustness.
-                 last_exception = e
-                 retries -= 1
-                 log.warning(f"Operational error getting conn. Retries left: {retries}. Waiting {delay}s...")
-                 if retries == 0:
-                      raise ConnectionError("Database operational error prevented getting connection.") from e
-                 time.sleep(delay)
-                 delay *=2
-            except Exception as e:
-                 log.error(f"Unexpected error getting DB connection: {e}", exc_info=True)
-                 raise # Re-raise unexpected errors immediately
-
-        # Should not be reachable if loop finishes without returning/raising
-        raise ConnectionError("Failed to acquire DB connection after retries.") from last_exception
-
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # This method is called after the 'with' block finishes or if an exception occurs inside it.
-        if self.conn: # Ensure connection was successfully acquired
-            conn_to_return = self.conn # Store ref before potentially setting self.conn = None
-            cursor_to_close = self.cursor
-            self.conn = None # Prevent accidental reuse
-            self.cursor = None
-            try:
-                if exc_type: # An exception occurred within the 'with' block
-                    log.warning(f"Exception occurred in DBPoolConnection block, rolling back transaction: {exc_type}")
-                    conn_to_return.rollback()
-                else: # No exception, commit the transaction
-                    conn_to_return.commit()
-                    log.debug("Committed DB transaction successfully.")
-            except (OperationalError, ProgrammingError, Exception) as e:
-                 log.error(f"Error during DB commit/rollback: {e}")
-                 # Attempt rollback again just in case commit failed
-                 try: conn_to_return.rollback()
-                 except Exception as rb_e: log.error(f"Secondary rollback attempt failed: {rb_e}")
-            finally:
-                 if cursor_to_close:
-                     try: cursor_to_close.close()
-                     except Exception: pass # Ignore cursor close errors
-                 if db_pool:
-                     try:
-                         db_pool.putconn(conn_to_return)
-                         log.debug("Returned connection to pool.")
-                     except Exception as e:
-                          log.error(f"Failed to return connection {conn_to_return} to pool: {e}")
-                          # If putconn fails, maybe close the connection directly?
-                          try: conn_to_return.close()
-                          except Exception: pass
-        # Return False to propagate any exceptions that occurred in the 'with' block
-        return False
-
-
+# --- Initialize Tables ---
 def initialize_db():
-    """Creates tables if they don't exist using pooled connection."""
-    if db_pool is None:
-        log.error("Skipping DB initialization because pool is not available.")
-        return
-
-    log.info("Ensuring database schema is initialized...")
+    conn = None
     try:
-        # Use the context manager to handle connection and cursor
-        with DBPoolConnection() as cur:
-            # Create servers table with UNIQUE constraint
+        conn = get_connection()
+        with conn.cursor() as cur:
+            # Create servers table (existing logic)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS servers (
                     id SERIAL PRIMARY KEY,
-                    ip VARCHAR(50) NOT NULL,
+                    ip VARCHAR(50),
                     motd TEXT,
                     players_online INT,
                     players_max INT,
                     player_names TEXT[],
                     version TEXT,
-                    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    UNIQUE(ip, timestamp) -- Prevent exact duplicate rows per second
+                    timestamp TIMESTAMPTZ DEFAULT NOW(),
+                    cidr_scan_ref TEXT, -- Optional: Reference back to the scan
+                    UNIQUE(ip, timestamp)
                 );
             """)
-            log.info("Table 'servers' initialization check complete.")
+            print("[DB] Table 'servers' is ready")
 
-            # Add checks/creation for other necessary tables here if any
-            # e.g., cur.execute("CREATE TABLE IF NOT EXISTS other_table (...)")
+            # Create cidr_ranges table (New)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS cidr_ranges (
+                    cidr_block TEXT PRIMARY KEY,
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    last_checkpoint_ip INET,
+                    last_scanned_timestamp TIMESTAMPTZ,
+                    found_server_count_history INTEGER DEFAULT 0,
+                    priority_score INTEGER DEFAULT 0,
+                    added_timestamp TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            print("[DB] Table 'cidr_ranges' is ready")
 
-    except (ConnectionError, OperationalError, ProgrammingError, Exception) as e:
-        log.error(f"DB schema initialization failed: {e}", exc_info=True)
+            # Create indexes (New)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cidr_ranges_scan_order
+                ON cidr_ranges (priority_score DESC, status, last_scanned_timestamp ASC NULLS FIRST);
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cidr_ranges_status ON cidr_ranges (status);
+            """)
+            print("[DB] Indexes for 'cidr_ranges' ensured")
 
+        conn.commit()
+    except Exception as e:
+        print(f"[DB ERROR] Initialization failed: {e}")
+        if conn: conn.rollback() # Rollback on error during init
+    finally:
+        if conn: put_connection(conn)
 
-# Call initialize_db() when module loads (after pool setup)
-initialize_db()
+# --- CIDR Range Functions (New) ---
 
-
-def insert_server_info(ip, motd, players_online, players_max, version, player_names):
-    """
-    Inserts a single server record (found or offline) using a pooled connection.
-    Matches the logic required by the reverted worker.
-    """
-    # Sanitize player_names (essential step)
-    if isinstance(player_names, str):
-        player_names = [name.strip() for name in player_names.split(",") if name.strip()]
-    elif not isinstance(player_names, list):
-        player_names = []
-    else:
-        # Ensure all items in list are strings and stripped
-        player_names = [str(p).strip() for p in player_names if str(p).strip()]
-
-    sql = """
-        INSERT INTO servers (ip, motd, players_online, players_max, version, player_names)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        ON CONFLICT (ip, timestamp) DO NOTHING
-    """
-    params = (str(ip), str(motd), int(players_online), int(players_max), str(version), player_names)
-
+def add_cidr_ranges(cidr_list):
+    """Adds a list of CIDR blocks to the table if they don't exist."""
+    conn = None
+    added_count = 0
     try:
-        # Use the context manager - it handles getconn, cursor, commit/rollback, putconn
-        with DBPoolConnection() as cur:
-            cur.execute(sql, params)
-        log.debug(f"Insert executed via pool for server: {ip}")
-    except (ConnectionError, OperationalError, ProgrammingError, Exception) as e:
-        # Log the error, but the context manager handles rollback/putconn
-        log.error(f"Pooled insert failed for {ip}: {e}")
-        # Re-raise the exception so the caller (worker) knows it failed? Optional.
-        # raise
+        conn = get_connection()
+        with conn.cursor() as cur:
+            # Prepare data as tuples for execute_values
+            data_to_insert = [(cidr,) for cidr in cidr_list]
+            # Use ON CONFLICT DO NOTHING to avoid errors if a CIDR already exists
+            insert_query = "INSERT INTO cidr_ranges (cidr_block) VALUES %s ON CONFLICT (cidr_block) DO NOTHING"
+            execute_values(cur, insert_query, data_to_insert)
+            added_count = cur.rowcount # Number of rows actually inserted
+        conn.commit()
+        print(f"[DB] Added {added_count} new CIDR ranges.")
+    except Exception as e:
+        print(f"[DB ERROR] Failed to add CIDR ranges: {e}")
+        if conn: conn.rollback()
+    finally:
+        if conn: put_connection(conn)
+    return added_count
+
+def get_next_range_to_scan(skip_zero_history=False, rescan_threshold_hours=24):
+    """
+    Finds the next available CIDR block to scan, marks it as 'scanning',
+    and returns its details (cidr_block, last_checkpoint_ip).
+    Uses locking via status update.
+    """
+    conn = None
+    selected_range = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            # Build the WHERE clause based on options
+            where_clauses = [
+                "(status = 'pending' OR status = 'completed' OR status = 'error')", # Base states eligible for scanning
+                # Rescan completed/error blocks only after threshold
+                f"(status = 'pending' OR last_scanned_timestamp IS NULL OR last_scanned_timestamp < NOW() - INTERVAL '{rescan_threshold_hours} hours')"
+            ]
+            if skip_zero_history:
+                # If skipping zeros, only pick completed blocks if they had history > 0
+                where_clauses.append("(status = 'pending' OR found_server_count_history > 0)")
+
+            where_sql = " AND ".join(f"({clause})" for clause in where_clauses)
+
+            # Query to find the highest priority available range
+            # Use FOR UPDATE SKIP LOCKED if you anticipate multiple controller instances
+            # For simplicity here, we rely on the atomic UPDATE RETURNING
+            query = f"""
+                SELECT cidr_block, last_checkpoint_ip
+                FROM cidr_ranges
+                WHERE {where_sql}
+                ORDER BY priority_score DESC, last_scanned_timestamp ASC NULLS FIRST, status
+                LIMIT 1
+            """
+            cur.execute(query)
+            candidate = cur.fetchone()
+
+            if candidate:
+                cidr_to_scan, last_ip = candidate
+                print(f"[Controller] Candidate range found: {cidr_to_scan}")
+                # Attempt to lock the range by setting status to 'scanning' atomically
+                update_query = """
+                    UPDATE cidr_ranges
+                    SET status = 'scanning',
+                        last_scanned_timestamp = NOW() -- Mark scan attempt time
+                    WHERE cidr_block = %s AND status != 'scanning' -- Ensure it wasn't just grabbed
+                    RETURNING cidr_block, last_checkpoint_ip;
+                """
+                cur.execute(update_query, (cidr_to_scan,))
+                locked_range = cur.fetchone()
+                if locked_range:
+                    selected_range = {
+                        "cidr_block": locked_range[0],
+                        "last_checkpoint_ip": str(locked_range[1]) if locked_range[1] else None
+                    }
+                    print(f"[Controller] Locked range for scanning: {selected_range['cidr_block']}")
+                    conn.commit() # Commit the lock
+                else:
+                    print(f"[Controller] Failed to lock {cidr_to_scan} (likely grabbed by another process). Will retry.")
+                    conn.rollback() # Rollback the attempt
+            else:
+                print("[Controller] No suitable ranges found to scan.")
+                conn.rollback() # No changes made
+
+    except Exception as e:
+        print(f"[DB ERROR] Failed to get next range: {e}")
+        if conn: conn.rollback()
+    finally:
+        if conn: put_connection(conn)
+    return selected_range
 
 
-# Keep batch insert stub for compatibility if called from elsewhere (e.g., dashboard?)
-# Note: The reverted worker does NOT use this.
+def update_checkpoint(cidr_block, last_ip_scanned):
+    """Updates the checkpoint IP for a given CIDR block."""
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE cidr_ranges SET last_checkpoint_ip = %s WHERE cidr_block = %s",
+                (str(last_ip_scanned), cidr_block) # Ensure IP is string for INET conversion
+            )
+        conn.commit()
+    except Exception as e:
+        print(f"[DB ERROR] Failed to update checkpoint for {cidr_block}: {e}")
+        if conn: conn.rollback()
+    finally:
+        if conn: put_connection(conn)
+
+def mark_range_completed(cidr_block, found_count_in_scan):
+    """Marks a range as completed and updates its historical count."""
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE cidr_ranges
+                SET status = 'completed',
+                    last_scanned_timestamp = NOW(),
+                    found_server_count_history = %s,
+                    last_checkpoint_ip = NULL -- Reset checkpoint on completion
+                WHERE cidr_block = %s
+                """,
+                (found_count_in_scan, cidr_block)
+            )
+        conn.commit()
+        print(f"[Controller] Marked {cidr_block} as completed. Found: {found_count_in_scan}.")
+    except Exception as e:
+        print(f"[DB ERROR] Failed to mark {cidr_block} completed: {e}")
+        if conn: conn.rollback()
+    finally:
+        if conn: put_connection(conn)
+
+def mark_range_error(cidr_block):
+    """Marks a range as 'error' if scanning failed irrecoverably."""
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE cidr_ranges SET status = 'error', last_scanned_timestamp = NOW() WHERE cidr_block = %s",
+                (cidr_block,)
+            )
+        conn.commit()
+        print(f"[Controller] Marked {cidr_block} with status 'error'.")
+    except Exception as e:
+        print(f"[DB ERROR] Failed to mark {cidr_block} as error: {e}")
+        if conn: conn.rollback()
+    finally:
+        if conn: put_connection(conn)
+
+# --- Server Insert Functions (Modify existing) ---
+# Modify insert_server_info and insert_server_batch to use pooled connections
+
+def insert_server_info(ip, motd, players_online, players_max, version, player_names, cidr_ref=None):
+    # ... (use get_connection() / put_connection() around your cursor logic)
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO servers (ip, motd, players_online, players_max, version, player_names, cidr_scan_ref)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT DO NOTHING
+            """, (ip, motd, players_online, players_max, version, player_names, cidr_ref)) # Add cidr_ref
+        conn.commit()
+        # print(f"[+] Inserted server: {ip}") # Maybe reduce logging noise
+    except Exception as e:
+        print(f"[!] Insert failed for {ip}: {e}")
+        if conn: conn.rollback()
+    finally:
+        if conn: put_connection(conn)
+
 def insert_server_batch(server_data):
-    """Inserts a batch using pooled connection."""
+    # server_data should now be list of tuples like:
+    # [(ip, motd, online, max, names, version, cidr_ref), ...]
     if not server_data:
-        log.debug("insert_server_batch called with no data.")
         return
-    log.warning("insert_server_batch function called - ensure this is intended use.")
-
+    conn = None
     query = """
-        INSERT INTO servers (ip, motd, players_online, players_max, player_names, version)
+        INSERT INTO servers (ip, motd, players_online, players_max, player_names, version, cidr_scan_ref)
         VALUES %s
-        ON CONFLICT (ip, timestamp) DO NOTHING
+        ON CONFLICT DO NOTHING
     """
-    processed_data = []
     try:
-        for row in server_data:
-             # Adapt based on expected tuple format from caller
-             ip, motd, online, max_p, names, version, *_ = row
-             if isinstance(names, str): names = [n.strip() for n in names.split(",") if n.strip()]
-             elif not isinstance(names, list): names = []
-             else: names = [str(p).strip() for p in names if str(p).strip()]
-             processed_data.append((ip, motd, online, max_p, names, version))
+        conn = get_connection()
+        with conn.cursor() as cur:
+            execute_values(cur, query, server_data)
+        conn.commit()
+        print(f"[+] Batch inserted: {len(server_data)} server entries")
+    except Exception as e:
+        print(f"[!] Batch insert failed: {e}")
+        if conn: conn.rollback()
+    finally:
+        if conn: put_connection(conn)
 
-        with DBPoolConnection() as cur:
-            # Use execute_values for efficiency if available
-            execute_values(cur, query, processed_data, page_size=200) # Adjust page_size as needed
-        log.info(f"Batch insert executed via pool for {len(processed_data)} potential entries.")
-
-    except (ConnectionError, OperationalError, ProgrammingError, Exception) as e:
-        log.error(f"Pooled batch insert failed: {e}")
-        # Context manager handles rollback/putconn
+# Call initialize_db() once when the module loads or app starts
+initialize_db()
