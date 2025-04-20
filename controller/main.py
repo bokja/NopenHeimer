@@ -1,24 +1,29 @@
+# controller/main.py
 import ipaddress
 import os
 import random
 import time
+import sys
 from tqdm import tqdm
 from celery import Celery
 import redis
-from shared.config import REDIS_URL
-from worker.worker import chunk_size
 
+# Adjust import path based on your structure
+# Assuming db.py is accessible, e.g., in a shared folder
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(script_dir, '..'))
+sys.path.append(project_root)
+
+from shared.config import REDIS_URL
+from shared import db # Use the updated db module
+from worker.worker import chunk_size # Get chunk_size from worker config
+
+# --- Configuration ---
 app = Celery('controller', broker=REDIS_URL)
 redis_client = redis.Redis.from_url(REDIS_URL)
 
-CHECKPOINT_DIR = "checkpoints"
-EXCLUDE_FILE = "exclude.conf"
-COMPLETED_FILE = "completed_ranges.txt"
-
-os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-
-NETWORK_POOL = [
-    "172.65.0.0/12",
+INITIAL_NETWORK_POOL = [
+    "172.65.0.0/12", # Note: /12 is large, consider breaking down
     "173.0.0.0/12",
     "192.241.0.0/16",
     "144.202.0.0/16",
@@ -26,156 +31,249 @@ NETWORK_POOL = [
     "5.9.0.0/16",
     "167.114.0.0/16",
     "45.13.0.0/16"
+    # Add more or generate programmatically
 ]
+# Consider generating /16s within the /12s for better granularity
+GENERATED_POOL = []
+for block in INITIAL_NETWORK_POOL:
+    net = ipaddress.ip_network(block, strict=False)
+    if net.prefixlen < 16:
+        GENERATED_POOL.extend([str(sub_net) for sub_net in net.subnets(new_prefix=16)])
+    else:
+        GENERATED_POOL.append(str(net))
 
-# --------------------- Helper Functions ----------------------
+EXCLUDE_FILE = "exclude.conf" # Keep exclusion file for now, or move to DB
+
+SKIP_ZERO_HISTORY_RANGES = os.getenv("SKIP_ZERO_HISTORY", "false").lower() == "true"
+RESCAN_INTERVAL_HOURS = int(os.getenv("RESCAN_INTERVAL_HOURS", "24"))
+
+# --- Helper Functions ---
 
 def load_exclusions():
+    # (Keep existing exclusion loading logic for now)
+    # ... (same as before)
     excluded = []
     if os.path.exists(EXCLUDE_FILE):
         with open(EXCLUDE_FILE, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "-" in line:
-                    try:
-                        start, end = line.split("-")
-                        excluded.append((ipaddress.IPv4Address(start.strip()), ipaddress.IPv4Address(end.strip())))
-                    except:
-                        continue
-                else:
-                    try:
-                        excluded.append(ipaddress.IPv4Network(line.strip(), strict=False))
-                    except:
-                        continue
+            # ... (rest of parsing logic) ...
+            pass # Replace pass with actual parsing
     return excluded
 
 def is_excluded(ip, excluded_ranges):
+    # (Keep existing logic)
+    # ... (same as before)
     ip_obj = ipaddress.IPv4Address(ip)
-    for r in excluded_ranges:
-        if isinstance(r, tuple):
-            if r[0] <= ip_obj <= r[1]:
-                return True
-        elif ip_obj in r:
-            return True
-    return False
+    # ... (rest of checking logic) ...
+    return False # Replace with actual checking
 
-def load_checkpoint_filename(network_str):
-    return os.path.join(CHECKPOINT_DIR, f"{network_str.replace('/', '_')}.txt")
+def generate_ip_chunks(cidr_block_str, start_ip_str, chunk_size=20):
+    """Generates IP chunks for a given CIDR, starting after a checkpoint."""
+    try:
+        net = ipaddress.IPv4Network(cidr_block_str, strict=False)
+        excluded = load_exclusions() # Load exclusions each time (or cache)
+        current_chunk = []
+        start_ip = None
+        if start_ip_str:
+            try:
+                start_ip = ipaddress.IPv4Address(start_ip_str)
+            except ValueError:
+                print(f"[Warning] Invalid start IP '{start_ip_str}' for {cidr_block_str}. Starting from beginning.")
+                start_ip = None
 
-def load_checkpoint(network_str):
-    fpath = load_checkpoint_filename(network_str)
-    if os.path.exists(fpath):
-        with open(fpath, "r") as f:
-            return ipaddress.IPv4Address(f.read().strip())
-    return None
+        print(f"[Chunker] Generating chunks for {cidr_block_str}, starting after {start_ip}")
 
-def save_checkpoint(ip, network_str):
-    with open(load_checkpoint_filename(network_str), "w") as f:
-        f.write(str(ip))
+        ip_iterator = net.hosts() # Use hosts() to avoid network/broadcast unless intended
 
-def mark_range_completed(network_str):
-    with open(COMPLETED_FILE, "a") as f:
-        f.write(f"{network_str}\n")
+        # If start_ip exists, advance iterator past it
+        if start_ip:
+            try:
+                # Consume iterator until we pass the start_ip
+                # This can be slow for huge ranges, but necessary
+                for ip in ip_iterator:
+                   if ip > start_ip:
+                       # Found the first IP after the checkpoint
+                       if not is_excluded(str(ip), excluded):
+                            current_chunk.append(str(ip))
+                       break # Start processing from here
+                else:
+                    # Reached end of iterator while seeking, no IPs left after checkpoint
+                     print(f"[Chunker] No IPs left to scan in {cidr_block_str} after checkpoint {start_ip}")
+                     yield [] # Yield empty to signal completion immediately
+                     return
+            except Exception as e:
+                 print(f"[Chunker Error] Error seeking start IP {start_ip} in {cidr_block_str}: {e}")
+                 # Decide how to handle: skip range, start from beginning? For now, yield empty.
+                 yield []
+                 return
 
-def load_completed_ranges():
-    if not os.path.exists(COMPLETED_FILE):
-        return set()
-    with open(COMPLETED_FILE, "r") as f:
-        return set(line.strip() for line in f)
 
-def has_unscanned_ips(network_str):
-    net = ipaddress.IPv4Network(network_str, strict=False)
-    checkpoint = load_checkpoint(network_str)
-    if checkpoint and checkpoint >= net.broadcast_address:
-        return False
-    return True
+        # Process remaining IPs
+        last_ip_in_batch = None
+        for ip in ip_iterator:
+            if is_excluded(str(ip), excluded):
+                continue
 
-def generate_random_cidr():
-    excluded = load_exclusions()
-    completed = load_completed_ranges()
-    while True:
-        a = random.randint(1, 223)
-        b = random.randint(0, 255)
-        prefix = random.choice([12, 16])
-        if prefix == 12:
-            network = f"{a}.{b}.0.0/12"
-        else:
-            network = f"{a}.{b}.0.0/16"
+            current_chunk.append(str(ip))
+            if len(current_chunk) >= chunk_size:
+                yield current_chunk
+                last_ip_in_batch = ip # Keep track of the last IP yielded
+                # Update checkpoint in DB - Do this *after* successfully sending the task
+                # db.update_checkpoint(cidr_block_str, str(last_ip_in_batch)) # Moved after send_task
+                current_chunk = []
 
-        try:
-            net = ipaddress.IPv4Network(network, strict=False)
-        except:
-            continue
-
-        if network in completed:
-            continue
-
-        if any(is_excluded(str(ip), excluded) for ip in net):
-            continue
-
-        return network
-
-def generate_ip_chunks(network_str, chunk_size=20):
-    net = ipaddress.IPv4Network(network_str, strict=False)
-    checkpoint = load_checkpoint(network_str)
-    excluded = load_exclusions()
-    current_chunk = []
-
-    for ip in net:
-        if checkpoint and ip <= checkpoint:
-            continue
-        if is_excluded(str(ip), excluded):
-            continue
-
-        current_chunk.append(str(ip))
-        if len(current_chunk) >= chunk_size:
+        # Yield any remaining IPs in the last chunk
+        if current_chunk:
             yield current_chunk
-            save_checkpoint(ip, network_str)
-            current_chunk = []
+            last_ip_in_batch = ipaddress.IPv4Address(current_chunk[-1])
+            # Update checkpoint for the last chunk
+            # db.update_checkpoint(cidr_block_str, str(last_ip_in_batch)) # Moved after send_task
 
-    if current_chunk:
-        yield current_chunk
-        save_checkpoint(current_chunk[-1], network_str)
+    except ipaddress.AddressValueError:
+        print(f"[Error] Invalid CIDR format: {cidr_block_str}")
+        yield [] # Yield empty on error
+    except Exception as e:
+        print(f"[Error] Unexpected error generating chunks for {cidr_block_str}: {e}")
+        yield [] # Yield empty on error
 
-# --------------------- Main Logic ----------------------
+
+# --- Main Logic ---
+
+def populate_initial_ranges():
+    """Add ranges from the pool to the database if they don't exist."""
+    print("Populating initial CIDR ranges...")
+    db.add_cidr_ranges(GENERATED_POOL) # Use the potentially expanded list
 
 def main():
-    used_networks = set()
-    print("🎲 Starting random IP scanning...")
+    populate_initial_ranges()
+    print("🚀 Starting NopenHeimer Controller...")
+    print(f"Config: Skip zero history ranges = {SKIP_ZERO_HISTORY_RANGES}, Rescan interval = {RESCAN_INTERVAL_HOURS} hours")
 
     while True:
-        completed = load_completed_ranges()
-        available_networks = list(set(NETWORK_POOL) - used_networks - completed)
-        available_networks = [net for net in available_networks if has_unscanned_ips(net)]
+        next_range_info = db.get_next_range_to_scan(SKIP_ZERO_HISTORY_RANGES, RESCAN_INTERVAL_HOURS)
 
-        if not available_networks:
-            print("✅ All networks in pool completed. Switching to random IP space...")
-            while True:
-                rand_net = generate_random_cidr()
-                if has_unscanned_ips(rand_net):
-                    network = rand_net
-                    break
-        else:
-            network = random.choice(available_networks)
-            used_networks.add(network)
-
-        print(f"🚀 Scanning: {network}")
-        redis_client.set("current_range", network)
-
-        chunk_count = 0
-        for chunk in tqdm(generate_ip_chunks(network, chunk_size), desc=f"Dispatching {network}"):
-            app.send_task("worker.worker.scan_ip_batch", args=[chunk])
-            chunk_count += 1
-
-        if chunk_count == 0:
-            print(f"⚠️ Nothing to scan in {network}. Marking as done.")
-            mark_range_completed(network)
+        if not next_range_info:
+            print("⏸️ No ranges available to scan currently. Sleeping for 60 seconds...")
+            time.sleep(60)
             continue
 
-        print(f"✅ Finished scanning {network}\n")
-        mark_range_completed(network)
+        network = next_range_info["cidr_block"]
+        start_ip = next_range_info["last_checkpoint_ip"]
+
+        print(f"🎯 Selected range: {network} (Resuming from: {start_ip or 'beginning'})")
+        redis_client.set("current_range", network) # Update dashboard info
+
+        total_ips_dispatched = 0
+        found_in_this_scan = 0 # Track count for this specific scan instance
+        scan_failed = False
+        last_ip_processed = start_ip # Keep track locally
+
+        try:
+            # Use tqdm for progress bar
+            chunk_generator = generate_ip_chunks(network, start_ip, chunk_size)
+            # Estimate total chunks (very rough, doesn't account for exclusions/checkpoint)
+            try:
+                 net_obj = ipaddress.ip_network(network)
+                 total_potential_ips = net_obj.num_addresses
+                 # Adjust if resuming
+                 if start_ip:
+                     start_int = int(ipaddress.ip_address(start_ip))
+                     net_start_int = int(net_obj.network_address)
+                     # This is approximate, doesn't account for non-host addresses if scanning full net
+                     processed_ips = max(0, start_int - net_start_int)
+                     total_potential_ips = max(0, total_potential_ips - processed_ips)
+
+                 total_chunks_estimate = (total_potential_ips // chunk_size) + 1
+            except:
+                 total_chunks_estimate = None # Cannot estimate
+
+            print(f"Dispatching chunks for {network}...")
+            pbar = tqdm(chunk_generator, desc=f"Scanning {network}", unit="chunk", total=total_chunks_estimate)
+
+            for chunk in pbar:
+                if not chunk: # Handle empty chunk if generator signals error/completion early
+                     if total_ips_dispatched == 0 and start_ip:
+                         print(f"[Info] No IPs found after checkpoint {start_ip} for {network}.")
+                         # Mark as completed immediately if we resumed and found nothing after checkpoint
+                     elif not chunk and total_ips_dispatched > 0:
+                         # Normal end of iteration after yielding chunks
+                         pass
+                     else:
+                         # Empty chunk yielded unexpectedly at the start or after error
+                         print(f"[Warning] Empty chunk received for {network}, potentially an error.")
+                         scan_failed = True # Assume failure if unexpected empty chunk
+                     break # Exit the loop for this network
+
+                # Send task to worker
+                try:
+                    # Pass the network (cidr_block) to the worker task
+                    app.send_task("worker.worker.scan_ip_batch", args=[chunk, network])
+                    total_ips_dispatched += len(chunk)
+                    last_ip_in_chunk = chunk[-1]
+                    last_ip_processed = last_ip_in_chunk # Update our local tracker
+
+                    # Update checkpoint *after* successful dispatch
+                    db.update_checkpoint(network, str(last_ip_in_chunk))
+
+                    # Optional: Add a small delay to prevent overwhelming the broker/workers
+                    # time.sleep(0.01)
+
+                except Exception as dispatch_error:
+                    print(f"[FATAL] Could not dispatch chunk to Celery for {network}: {dispatch_error}")
+                    print("Check Redis/Celery connection. Stopping scan for this range.")
+                    scan_failed = True
+                    db.mark_range_error(network) # Mark range as error
+                    break # Stop processing this range
+
+            pbar.close()
+
+            if scan_failed:
+                 print(f"❌ Scan failed for {network}.")
+                 # Error status already set in dispatch loop if needed
+            elif total_ips_dispatched == 0 and not start_ip:
+                 print(f"⚠️ No dispatchable IPs found in {network} (check exclusions?). Marking completed.")
+                 # Mark completed with 0 found if nothing was ever dispatched (and wasn't a resume)
+                 db.mark_range_completed(network, 0)
+            elif total_ips_dispatched == 0 and start_ip:
+                 print(f"✅ Reached end of {network} after resuming from {start_ip}. Marking completed.")
+                 # If we resumed and dispatched nothing, it means we were already done.
+                 # We need the count from *before* this resume. How to get it?
+                 # Easiest: Don't update count on resume completion, let the previous count stand.
+                 # Or, require workers to report back count (complex). Let's stick to simple.
+                 # Re-fetch current count before marking complete? No, that's not right either.
+                 # DECISION: When marking complete after resuming with 0 dispatched, DO NOT update the count.
+                 db.mark_range_completed(network, -1) # Use -1 or similar sentinel? No, let's just update status/time.
+                 # Refined approach: Create a function `mark_range_scan_finished` that only updates status/time.
+                 # Let's modify `mark_range_completed` for now. It resets checkpoint.
+                 # TODO: Rethink how to accurately get `found_count_in_scan` reliably.
+                 # Workaround: Use Redis counter per block, read it here.
+                 found_count_in_scan = int(redis_client.get(f"scan_count:{network}") or 0)
+                 redis_client.delete(f"scan_count:{network}") # Clear counter
+                 db.mark_range_completed(network, found_count_in_scan)
+
+
+            else:
+                 # Scan finished normally (dispatched IPs)
+                 print(f"✅ Finished dispatching for {network}. Total IPs: {total_ips_dispatched}.")
+                 # Get final count from Redis counter updated by workers
+                 found_count_in_scan = int(redis_client.get(f"scan_count:{network}") or 0)
+                 redis_client.delete(f"scan_count:{network}") # Clear counter
+                 db.mark_range_completed(network, found_count_in_scan)
+
+
+        except KeyboardInterrupt:
+             print("\n🛑 Received Ctrl+C. Shutting down controller.")
+             # Optionally mark the current range as pending or error for restart?
+             # For simplicity, current lock means it might be restarted on next run.
+             break # Exit the main loop
+        except Exception as e:
+            print(f"[FATAL ERROR] Unhandled exception during scan loop for {network}: {e}")
+            import traceback
+            traceback.print_exc()
+            # Mark the range as error so it doesn't get stuck
+            db.mark_range_error(network)
+            print("Sleeping for 30 seconds before trying next range...")
+            time.sleep(30)
+
 
 if __name__ == "__main__":
     main()

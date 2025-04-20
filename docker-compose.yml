@@ -41,13 +41,5 @@ services:
       - redis
       - postgres
 
-  worker:
-    build: .
-    command: celery -A worker.worker worker --pool=eventlet --concurrency=100 --loglevel=info
-    env_file: .env
-    depends_on:
-      - redis
-      - postgres
-
 volumes:
   pgdata:
