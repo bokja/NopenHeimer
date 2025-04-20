@@ -17,6 +17,3 @@ POSTGRES_HOST = os.getenv("POSTGRES_HOST", "172.31.28.192")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "mcdata")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "mcscanner")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "mcscannerpass")
-
-SKIP_ZERO_HISTORY_RANGES = os.getenv("SKIP_ZERO_HISTORY", "false").lower() == "true"
-RESCAN_INTERVAL_HOURS = int(os.getenv("RESCAN_INTERVAL_HOURS", "24"))
