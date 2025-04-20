@@ -19,6 +19,8 @@ TARGET_PORT = int(os.getenv("TARGET_PORT", 25565))
 # Use a single timeout consistent with old worker code default
 WORKER_TIMEOUT = float(os.getenv("WORKER_TIMEOUT", 0.3))
 
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 20)) # Default to 20
+
 # DB Pool config
 DB_MIN_CONN = int(os.getenv("DB_MIN_CONN", 5))
 # START CONSERVATIVELY - If 100 concurrency, maybe ~50 pool size? TUNE THIS.

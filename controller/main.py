@@ -6,7 +6,8 @@ from tqdm import tqdm
 from celery import Celery
 import redis
 from shared.config import REDIS_URL
-from worker.worker import chunk_size
+#from worker.worker import chunk_size
+from shared.config import REDIS_URL, CHUNK_SIZE 
 
 app = Celery('controller', broker=REDIS_URL)
 redis_client = redis.Redis.from_url(REDIS_URL)
@@ -117,7 +118,7 @@ def generate_random_cidr():
 
         return network
 
-def generate_ip_chunks(network_str, chunk_size=20):
+def generate_ip_chunks(network_str, chunk_sz=CHUNK_SIZE)::
     net = ipaddress.IPv4Network(network_str, strict=False)
     checkpoint = load_checkpoint(network_str)
     excluded = load_exclusions()
