@@ -14,7 +14,7 @@ sys.path.append(project_root)
 
 from shared.config import REDIS_URL
 from shared import db # Use updated db module with pooling
-from tools.mc_ping import ping_server
+from shared.mc_ping import ping_server
 
 # --- Celery and Redis Setup ---
 app = Celery("worker", broker=REDIS_URL)
