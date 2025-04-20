@@ -118,7 +118,7 @@ def generate_random_cidr():
 
         return network
 
-def generate_ip_chunks(network_str, chunk_sz=CHUNK_SIZE):
+def generate_ip_chunks(network_str, chunk_sz=CHUNK_SIZE)::
     net = ipaddress.IPv4Network(network_str, strict=False)
     checkpoint = load_checkpoint(network_str)
     excluded = load_exclusions()
