@@ -1,88 +1,125 @@
+# NopenHeimer/worker/worker.py - IMPROVED Version (Old Logic + Pooling/Logging)
 import socket
 import time
 import uuid
+import sys
+import os
 import redis
 from celery import Celery
-from shared.config import REDIS_URL
-from tools.db import insert_server_info  # PostgreSQL helper
-from tools.mc_ping import ping_server  # Unified Minecraft ping
+from celery.exceptions import MaxRetriesExceededError
+import logging
 
-# Initialize Celery and Redis
-app = Celery("worker", broker=REDIS_URL)
-redis_client = redis.Redis.from_url(REDIS_URL)
+# --- Project Setup ---
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(script_dir, '..'))
+sys.path.append(project_root)
 
-# Configuration
-target_port = 25565
-timeout = 0.3
-chunk_size = 20  # used by controller too
+# --- Imports ---
+from shared.logger import get_logger
+from shared.config import REDIS_URL, TARGET_PORT, WORKER_TIMEOUT # Use unified timeout
+from shared import db # Use improved db module (with pooling)
+from shared.mc_ping import ping_server # Use improved mc_ping
 
-def is_port_open(ip, port=target_port):
+# --- Initialization ---
+log = get_logger("worker")
+hostname = socket.gethostname()
+try:
+    app = Celery("worker", broker=REDIS_URL)
+    redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    redis_client.ping()
+    log.info(f"Worker ({hostname}) connected to Redis.")
+except Exception as e:
+    log.critical(f"FATAL: Worker ({hostname}) failed to connect to Redis: {e}")
+    sys.exit(1)
+
+# --- Helper Function ---
+def is_port_open(ip, port=TARGET_PORT, timeout=WORKER_TIMEOUT):
+    """Quickly checks if a TCP port is open."""
     try:
         with socket.create_connection((ip, port), timeout=timeout):
             return True
-    except Exception:
-        return False
+    except (socket.timeout, ConnectionRefusedError, OSError): return False
+    except Exception as e: log.debug(f"is_port_open error {ip}:{port}: {e}"); return False
 
-@app.task(name="worker.worker.scan_ip_batch")
-def scan_ip_batch(ip_list):
-    hostname = socket.gethostname()
-    found = 0
-    timestamp = int(time.time())
+# --- Celery Task ---
+@app.task(name="worker.worker.scan_ip_batch", bind=True, max_retries=2, default_retry_delay=5)
+def scan_ip_batch(self, ip_list, cidr_block): # Added cidr_block back for consistency
+    """
+    Worker task replicating OLD logic flow with IMPROVED components:
+    - Uses connection pooling via shared.db.insert_server_info.
+    - Uses standard logging.
+    - Still inserts [OFFLINE] records.
+    """
+    batch_start_time = time.monotonic()
+    pings_succeeded = 0
+    ports_found_open = 0
+    processed_count = 0
+    scan_count_key = f"scan_count:{cidr_block}"
 
-    print(f"[{hostname}] Scanning {len(ip_list)} IPs...")
+    log.debug(f"Task {self.request.id} Received Batch:{cidr_block} Size:{len(ip_list)}")
 
-    for ip in ip_list:
-        if not is_port_open(ip):
-            continue
+    try:
+        for ip in ip_list:
+            processed_count += 1
+            ping_result_data = None
 
-        result = ping_server(ip)
-        if result:
-            motd = result.get("motd") or ""
-            players_online = result.get("players_online") or 0
-            players_max = result.get("players_max") or 0
-            version = result.get("version") or "unknown"
-            player_names = result.get("player_names") or []
+            # --- Step 1: Check Port Open ---
+            if not is_port_open(ip, port=TARGET_PORT, timeout=WORKER_TIMEOUT):
+                continue
 
-            print(f"[{hostname}] [+] {ip} - {motd} [{players_online}/{players_max}] - {version}")
-            redis_client.sadd("found_servers", ip)
-            found += 1
+            ports_found_open += 1
+            log.debug(f"[*] Port open for {ip}. Pinging...")
 
+            # --- Step 2: Attempt Minecraft Ping ---
             try:
-                insert_server_info(
-                    ip=ip,
-                    motd=motd,
-                    players_online=players_online,
-                    players_max=players_max,
-                    version=version,
-                    player_names=player_names
-                )
-            except Exception as e:
-                print(f"[!] Failed to insert {ip} into DB: {e}")
+                ping_result_data = ping_server(ip, port=TARGET_PORT, timeout=WORKER_TIMEOUT)
+            except Exception as ping_err:
+                log.debug(f"Ping error for {ip} (port open): {ping_err}")
 
-        else:
-            print(f"[{hostname}] [-] No MC ping from {ip} (port open)")
-            
-            # Insert as offline server (port open, no response)
+            # --- Step 3: Insert Found Server OR Offline Record ---
+            db_insert_error = False
             try:
-                insert_server_info(
-                    ip=ip,
-                    motd="[OFFLINE]",
-                    players_online=0,
-                    players_max=0,
-                    version="unknown",
-                    player_names=[]
-                )
-                print(f"[{hostname}] [•] Offline server recorded: {ip}")
-            except Exception as e:
-                print(f"[!] Failed to insert offline {ip} into DB: {e}")
+                if ping_result_data:
+                    pings_succeeded += 1
+                    motd = ping_result_data.get("motd", "") or ""
+                    players_online = ping_result_data.get("players_online", 0) or 0
+                    players_max = ping_result_data.get("players_max", 0) or 0
+                    version = ping_result_data.get("version", "unknown") or "unknown"
+                    player_names = ping_result_data.get("player_names", []) or []
+                    log.info(f"[+] Found: {ip} ({cidr_block}) | {players_online}/{players_max} | {version[:30]}")
+                    try: redis_client.sadd("found_servers", ip)
+                    except Exception as redis_err: log.warning(f"Redis sadd fail {ip}: {redis_err}")
+                    # Insert Found Record (uses pooling via db module)
+                    db.insert_server_info(ip, motd, players_online, players_max, version, player_names)
+                else:
+                    log.info(f"[-] No MC ping from {ip} ({cidr_block}) (port open)")
+                    # Insert OFFLINE Record (uses pooling via db module)
+                    db.insert_server_info(ip, "[OFFLINE]", 0, 0, "unknown", [])
+            except Exception as db_err:
+                 db_insert_error = True
+                 log.error(f"DB insert failed for {ip} (Result: {ping_result_data is not None}): {db_err}")
+                 if ping_result_data: pings_succeeded -= 1 # Don't count if DB failed for found server
 
+        # --- Redis Stats Update ---
+        if pings_succeeded > 0:
+             try: redis_client.incrby(scan_count_key, pings_succeeded)
+             except Exception as e: log.error(f"Redis incrby fail {scan_count_key}: {e}")
+        try:
+            pipe = redis_client.pipeline()
+            pipe.incrby("stats:total_scanned", len(ip_list))
+            if pings_succeeded > 0: pipe.incrby("stats:total_found", pings_succeeded)
+            ts = int(time.time()); score_val = f"{ts}:{len(ip_list)}:{hostname}:{uuid.uuid4()}"
+            pipe.zadd("stats:scans", {score_val: ts})
+            pipe.setex(f"stats:worker:{hostname}", 90, "online")
+            pipe.execute()
+        except Exception as e: log.error(f"Redis pipeline stats fail: {e}")
 
-    # Redis Stats
-    pipe = redis_client.pipeline()
-    pipe.incrby("stats:total_scanned", len(ip_list))
-    pipe.incrby("stats:total_found", found)
-    pipe.zadd("stats:scans", {f"{timestamp}:{len(ip_list)}:{uuid.uuid4()}": timestamp})
-    pipe.setex(f"stats:worker:{hostname}", 90, "online")
-    pipe.execute()
+        elapsed = time.monotonic() - batch_start_time
+        log.info(f"Task {self.request.id} Finished Batch:{cidr_block} In:{len(ip_list)} Open:{ports_found_open} Found:{pings_succeeded} Time:{elapsed:.2f}s")
 
-    print(f"[{hostname}] Finished. Found {found}, scanned {len(ip_list)}.")
+    except MaxRetriesExceededError as e: log.error(f"FATAL Max retries task {self.request.id} batch {cidr_block}: {e}")
+    except Exception as e:
+        log.error(f"UNHANDLED ERROR task {self.request.id} batch {cidr_block}: {e}", exc_info=True)
+        try: log.warning(f"Retrying task {self.request.id}"); self.retry(exc=e)
+        except MaxRetriesExceededError: log.error(f"Max retries task {self.request.id} after unhandled.")
+        except Exception as re: log.error(f"Retry error task {self.request.id}: {re}")
