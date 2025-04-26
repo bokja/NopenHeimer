@@ -1,0 +1,15 @@
+.git
+.vscode
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.env
+checkpoints/
+exports/
+pgdata/
+*.md
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile
+README.md

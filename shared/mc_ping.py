@@ -2,6 +2,7 @@ import socket
 import struct
 import json
 import re
+from shared.logger import logger
 
 # Config
 DEFAULT_PORT = 25565
@@ -95,7 +96,7 @@ def ping_modern(ip, port=DEFAULT_PORT, timeout=TIMEOUT):
             }
 
     except Exception as e:
-        print(f"[!] Modern ping error for {ip}: {e}")
+        logger.warning(f"[Ping Modern] Error for {ip}:{port}: {e}", exc_info=False)
         return None
 
 # ------------------------------------
@@ -123,7 +124,7 @@ def parse_legacy_ping(response):
                 "player_names": []  # Legacy doesn't return sample list
             }
     except Exception as e:
-        print(f"[!] Legacy parse failed: {e}")
+        logger.warning(f"[Ping Legacy] Parse failed: {e}")
     return None
 
 # ------------------------------------

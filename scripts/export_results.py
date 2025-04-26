@@ -17,4 +17,4 @@ def export_to_csv(filename="found_servers.csv"):
     print(f"✅ Exported {len(servers)} servers to {path}")
 
 if __name__ == "__main__":
-    export_to_csv()
+    export_to_csv() 
