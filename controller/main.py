@@ -5,8 +5,8 @@ import time
 from tqdm import tqdm
 from celery import Celery
 import redis
-from shared.config import REDIS_URL
-from worker.worker import chunk_size
+from shared.config import REDIS_URL, NETWORK_POOL, CONTROLLER_CHUNK_SIZE
+from shared.logger import logger
 
 app = Celery('controller', broker=REDIS_URL)
 redis_client = redis.Redis.from_url(REDIS_URL)
@@ -17,16 +17,11 @@ COMPLETED_FILE = "completed_ranges.txt"
 
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-NETWORK_POOL = [
-    "172.65.0.0/12",
-    "173.0.0.0/12",
-    "192.241.0.0/16",
-    "144.202.0.0/16",
-    "51.81.0.0/16",
-    "5.9.0.0/16",
-    "167.114.0.0/16",
-    "45.13.0.0/16"
-]
+# NETWORK_POOL is now imported from shared.config
+# NETWORK_POOL = [
+#     "172.65.0.0/12",
+#     ...
+# ]
 
 # --------------------- Helper Functions ----------------------
 
@@ -117,7 +112,7 @@ def generate_random_cidr():
 
         return network
 
-def generate_ip_chunks(network_str, chunk_size=20):
+def generate_ip_chunks(network_str, chunk_size=CONTROLLER_CHUNK_SIZE):
     net = ipaddress.IPv4Network(network_str, strict=False)
     checkpoint = load_checkpoint(network_str)
     excluded = load_exclusions()
@@ -143,7 +138,7 @@ def generate_ip_chunks(network_str, chunk_size=20):
 
 def main():
     used_networks = set()
-    print("🎲 Starting random IP scanning...")
+    logger.info("🎲 Starting controller...")
 
     while True:
         completed = load_completed_ranges()
@@ -151,7 +146,7 @@ def main():
         available_networks = [net for net in available_networks if has_unscanned_ips(net)]
 
         if not available_networks:
-            print("✅ All networks in pool completed. Switching to random IP space...")
+            logger.info("✅ All networks in pool completed. Switching to random IP space...")
             while True:
                 rand_net = generate_random_cidr()
                 if has_unscanned_ips(rand_net):
@@ -161,20 +156,20 @@ def main():
             network = random.choice(available_networks)
             used_networks.add(network)
 
-        print(f"🚀 Scanning: {network}")
+        logger.info(f"🚀 Scanning: {network}")
         redis_client.set("current_range", network)
 
         chunk_count = 0
-        for chunk in tqdm(generate_ip_chunks(network, chunk_size), desc=f"Dispatching {network}"):
+        for chunk in tqdm(generate_ip_chunks(network, CONTROLLER_CHUNK_SIZE), desc=f"Dispatching {network}"):
             app.send_task("worker.worker.scan_ip_batch", args=[chunk])
             chunk_count += 1
 
         if chunk_count == 0:
-            print(f"⚠️ Nothing to scan in {network}. Marking as done.")
+            logger.warning(f"⚠️ Nothing to scan in {network}. Marking as done.")
             mark_range_completed(network)
             continue
 
-        print(f"✅ Finished scanning {network}\n")
+        logger.info(f"✅ Finished scanning {network}")
         mark_range_completed(network)
 
 if __name__ == "__main__":

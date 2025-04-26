@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  worker:
+    build: .
+    # Ensure the image is built or pulled on the worker machine
+    # image: your-dockerhub-username/nopenheimer:latest # Alternatively, use a pre-built image
+    command: celery -A worker.worker worker --pool=eventlet --concurrency=100 --loglevel=INFO
+    env_file: .env # Assumes .env file with REDIS_URL, POSTGRES_*, etc. is present on worker machine
+    restart: unless-stopped
+    # No 'depends_on' here, as Redis/Postgres are external
+
+# No volumes defined here unless the worker needs specific persistent storage
+# No networks defined unless needed to connect to external Redis/Postgres network 

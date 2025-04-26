@@ -5,11 +5,21 @@ import redis
 import psycopg2
 from flask import Flask, render_template, Response, jsonify, request
 from shared.config import REDIS_URL, POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+from shared.db import get_connection, put_connection, initialize_pool
+from shared.logger import logger
 
 # Flask + Redis
 template_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'templates'))
 app = Flask(__name__, template_folder=template_dir)
 redis_client = redis.Redis.from_url(REDIS_URL)
+
+# Initialize DB Pool (call once at startup)
+try:
+    initialize_pool()
+except Exception as e:
+    logger.critical(f"Dashboard failed to initialize DB pool: {e}", exc_info=True)
+    # Decide how to handle - maybe exit or run without DB features?
+    # For now, let it continue but log critical error
 
 @app.route("/")
 def dashboard():
@@ -40,8 +50,6 @@ def export():
     lines = "\n".join(ip_list[:limit])
     return Response(lines, mimetype="text/plain")
 
-
-
 @app.route("/stats")
 def stats():
     now = int(time.time())
@@ -69,14 +77,9 @@ def stats():
 
 @app.route("/server-details")
 def server_details():
+    conn = None # Initialize conn
     try:
-        conn = psycopg2.connect(
-            host=POSTGRES_HOST,
-            dbname=POSTGRES_DB,
-            user=POSTGRES_USER,
-            password=POSTGRES_PASSWORD
-        )
-        conn.autocommit = True
+        conn = get_connection() # Use pool
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT ip, motd, players_online, players_max, player_names, version, timestamp
@@ -95,8 +98,11 @@ def server_details():
                 } for r in rows
             ])
     except Exception as e:
-        print("DB Error:", e)
+        logger.error(f"DB Error in /server-details: {e}", exc_info=True)
         return jsonify([])
+    finally:
+        if conn:
+            put_connection(conn) # Return connection to pool
 
 @app.route("/api/servers")
 def get_servers():
@@ -106,7 +112,6 @@ def get_servers():
 def get_range():
     current_range = redis_client.get("current_range")
     return jsonify({"range": current_range.decode() if current_range else "Unknown"})
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
